@@ -1,0 +1,299 @@
+"""
+Các Widget tái sử dụng của ứng dụng.
+Hiện tại:
+    - PathSelectorWidget
+"""
+from __future__ import annotations
+from pathlib import Path
+from PySide6.QtCore import Signal
+from base_widget import BaseWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QFormLayout,
+    QGroupBox,
+    QHeaderView,
+    QProgressBar,
+    QTableView,
+    QAbstractItemView,
+)
+
+
+# =============================================================================
+# Path Selector Widget
+# =============================================================================
+
+class PathSelectorWidget(BaseWidget):
+    """
+    Widget dùng để chọn đường dẫn.
+    Cấu trúc:
+        +-------------------------------------------+
+        Input Folder
+        +-------------------------------------------+
+        | C:\\Invoice\\2025              | Browse |
+        +-------------------------------------------+
+    Widget này KHÔNG mở QFileDialog.
+    Chỉ phát tín hiệu browse_clicked().
+    """
+
+    browse_clicked = Signal()
+
+    # -------------------------------------------------------------------------
+    # Constructor
+    # -------------------------------------------------------------------------
+
+    def __init__(
+        self,
+        title: str,
+        button_text: str = "Browse...",
+        parent=None,
+    ) -> None:
+
+        self._title = title
+        self._button_text = button_text
+
+        super().__init__(parent)
+
+    # -------------------------------------------------------------------------
+    # Protected Life Cycle
+    # -------------------------------------------------------------------------
+
+    def _create_widgets(self) -> None:
+
+        self.lbl_title = QLabel(self._title)
+
+        self.edit_path = QLineEdit()
+        self.edit_path.setReadOnly(True)
+
+        self.btn_browse = QPushButton(self._button_text)
+
+    def _create_layout(self) -> None:
+
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(self.edit_path)
+        button_layout.addWidget(self.btn_browse)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.addWidget(self.lbl_title)
+        main_layout.addLayout(button_layout)
+
+    def _connect_signals(self) -> None:
+
+        self.btn_browse.clicked.connect(self.browse_clicked)
+
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+
+    def set_path(self, path: str | Path) -> None:
+        """Hiển thị đường dẫn lên LineEdit."""
+        self.edit_path.setText(str(path))
+
+    def path(self) -> Path:
+        """Trả về đường dẫn hiện tại."""
+        text = self.edit_path.text().strip()
+
+        if not text:
+            return Path()
+
+        return Path(text)
+
+    def clear(self) -> None:
+
+        self.edit_path.clear()
+
+    def reset(self) -> None:
+
+        self.clear()
+
+# =============================================================================
+# Progress Widget
+# =============================================================================
+
+
+class ProgressWidget(BaseWidget):
+    """
+    Hiển thị tiến trình xử lý.
+        Progress
+        ████████████████████░░░░░
+        120 / 450
+        26 %
+
+        Elapsed : 00:01:15
+        ETA     : 00:03:20
+    Widget này chỉ hiển thị dữ liệu.
+    Không tự tính toán thời gian.
+    """
+
+    # -------------------------------------------------------------------------
+    # Constructor
+    # -------------------------------------------------------------------------
+
+    def __init__(self, parent=None):
+
+        super().__init__(parent)
+
+    # -------------------------------------------------------------------------
+    # Protected Life Cycle
+    # -------------------------------------------------------------------------
+
+    def _create_widgets(self):
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setValue(0)
+
+        self.lbl_progress = QLabel("0 / 0")
+        self.lbl_percent = QLabel("0 %")
+
+        self.lbl_elapsed = QLabel("--:--:--")
+        self.lbl_eta = QLabel("--:--:--")
+
+    def _create_layout(self):
+
+        form = QFormLayout()
+
+        form.addRow("Progress", self.progress_bar)
+        form.addRow("Processed", self.lbl_progress)
+        form.addRow("Percent", self.lbl_percent)
+        form.addRow("Elapsed", self.lbl_elapsed)
+        form.addRow("ETA", self.lbl_eta)
+
+        group = QGroupBox("Processing Progress")
+        group.setLayout(form)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(group)
+
+    def _connect_signals(self):
+
+        pass
+
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+
+    def update_progress(
+        self,
+        processed: int,
+        total: int,
+        elapsed: str = "--:--:--",
+        eta: str = "--:--:--",
+    ) -> None:
+        """Cập nhật toàn bộ thông tin tiến trình."""
+        percent = 0
+
+        if total > 0:
+            percent = int(processed * 100 / total)
+
+        self.progress_bar.setValue(percent)
+
+        self.lbl_progress.setText(f"{processed} / {total}")
+
+        self.lbl_percent.setText(f"{percent} %")
+
+        self.lbl_elapsed.setText(elapsed)
+
+        self.lbl_eta.setText(eta)
+
+    def clear(self):
+
+        self.reset()
+
+    def reset(self):
+
+        self.update_progress(0, 0)
+
+
+# =============================================================================
+# Processing Table
+# =============================================================================
+
+
+class ProcessingTable(BaseWidget):
+    """
+    Widget bao bọc QTableView.
+    Chỉ quản lý giao diện.
+    Không lưu dữ liệu.
+    Không biết QAbstractTableModel.
+    """
+    # -------------------------------------------------------------------------
+    # Constructor
+    # -------------------------------------------------------------------------
+
+    def __init__(self, parent=None):
+
+        super().__init__(parent)
+
+    # -------------------------------------------------------------------------
+    # Protected Life Cycle
+    # -------------------------------------------------------------------------
+
+    def _create_widgets(self):
+
+        self.lbl_title = QLabel("Processing Status")
+
+        self.table = QTableView()
+
+        self.table.setAlternatingRowColors(True)
+
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+
+        self.table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+
+        self.table.verticalHeader().setVisible(False)
+
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+
+    def _create_layout(self):
+
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(self.lbl_title)
+
+        layout.addWidget(self.table)
+
+    def _connect_signals(self):
+
+        pass
+
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+
+    def set_model(self, model) -> None:
+        """Gán QAbstractTableModel."""
+        self.table.setModel(model)
+
+    def model(self):
+        """Trả về model hiện tại."""
+        return self.table.model()
+
+    def resize_columns(self, widths: list[int]) -> None:
+        """Thiết lập chiều rộng các cột."""
+        for column, width in enumerate(widths):
+            self.table.setColumnWidth(column, width)
+
+    def clear(self):
+
+        self.table.clearSelection()
+
+    def reset(self):
+
+        self.clear()

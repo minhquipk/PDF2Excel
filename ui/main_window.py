@@ -1,0 +1,188 @@
+from __future__ import annotations
+from core.constants import App
+from models.processing_table_model import ProcessingTableModel
+from ui.widgets import PathSelectorWidget, ProgressWidget, ProcessingTable
+from PySide6.QtCore import QThread
+from ui.worker import Worker
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QHBoxLayout,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class MainWindow(QMainWindow):
+    """
+    Main window of the PDF to Excel Extractor application.
+    Responsibilities:
+    - Build the UI.
+    - Open file dialogs.
+    - Coordinate Worker (to be connected later).
+    - Update UI state.
+    """
+    def __init__(self) -> None:
+        super().__init__()
+
+        self._thread = QThread(self)
+        self._worker = Worker()
+        self._worker.moveToThread(self._thread)
+        self._table_model = ProcessingTableModel()
+
+        self.setWindowTitle(App.NAME)
+        self.resize(1200, 800)
+
+        self._create_widgets()
+        self._create_layout()
+        self._connect_signals()
+        self._set_running(False)
+
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
+
+    def _create_widgets(self) -> None:
+        self.input_widget = PathSelectorWidget("Input Folder")
+        self.output_widget = PathSelectorWidget("Output Excel")
+
+        self.btn_start = QPushButton("Start")
+        self.btn_stop = QPushButton("Stop")
+        self.btn_report = QPushButton("Report")
+        self.btn_exit = QPushButton("Exit")
+
+        self.progress_widget = ProgressWidget()
+        self.processing_table = ProcessingTable()
+        self.processing_table.set_model(self._table_model)
+        self._worker.file_processed.connect(self._table_model.append)
+
+    def _create_layout(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+
+        layout = QVBoxLayout(central)
+
+        layout.addWidget(self.input_widget)
+        layout.addWidget(self.output_widget)
+
+        start_layout = QHBoxLayout()
+        start_layout.addStretch()
+        start_layout.addWidget(self.btn_start)
+        start_layout.addWidget(self.btn_stop)
+        start_layout.addStretch()
+        layout.addLayout(start_layout)
+
+        layout.addWidget(self.progress_widget)
+        layout.addWidget(self.processing_table)
+
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+        bottom.addWidget(self.btn_report)
+        bottom.addWidget(self.btn_exit)
+        layout.addLayout(bottom)
+
+    def _connect_signals(self) -> None:
+        self.input_widget.browse_clicked.connect(self._browse_input)
+        self.output_widget.browse_clicked.connect(self._browse_output)
+        self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self.on_worker_progress)
+        self._worker.finished.connect(self.on_worker_finished)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.cancelled.connect(self.on_worker_finished)
+        self._worker.cancelled.connect(self._thread.quit)
+        self._worker.file_processed.connect(self._table_model.append)
+
+        self.btn_start.clicked.connect(self._start)
+        self.btn_stop.clicked.connect(self._stop)
+        self.btn_report.clicked.connect(self._report)
+        self.btn_exit.clicked.connect(self.close)
+
+    # ------------------------------------------------------------------
+    # State
+    # ------------------------------------------------------------------
+
+    def _set_running(self, running: bool) -> None:
+        self.input_widget.setEnabled(not running)
+        self.output_widget.setEnabled(not running)
+
+        self.btn_start.setEnabled(not running)
+        self.btn_stop.setEnabled(running)
+
+        self.btn_report.setEnabled(not running)
+
+    # ------------------------------------------------------------------
+    # Slots
+    # ------------------------------------------------------------------
+
+    def _browse_input(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select PDF Folder")
+        if folder:
+            self.input_widget.set_path(folder)
+
+    def _browse_output(self) -> None:
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Excel Template",
+            "",
+            "Excel Files (*.xlsx)",
+        )
+        if file_name:
+            self.output_widget.set_path(file_name)
+
+    def _start(self) -> None:
+        if not self.input_widget.path():
+            QMessageBox.warning(self, "Warning", "Please select an input folder.")
+            return
+        if not self.output_widget.path():
+            QMessageBox.warning(self, "Warning", "Please select an output Excel file.")
+            return
+
+        self._table_model.clear()
+        self._set_running(True)
+        self._worker.configure(
+            self.input_widget.path(),
+            self.output_widget.path(),
+        )
+        self._thread.start()
+
+    def _stop(self) -> None:
+        # TODO: worker.stop()
+        self._worker.cancel()
+
+    def _report(self) -> None:
+        QMessageBox.information(
+            self,
+            "Report",
+            "Report feature will be implemented later."
+        )
+
+    # ------------------------------------------------------------------
+    # Worker callbacks (reserved)
+    # ------------------------------------------------------------------
+
+    def on_worker_finished(self) -> None:
+        self._set_running(False)
+
+    def on_worker_progress(
+        self,
+        processed: int,
+        total: int,
+        elapsed: str,
+        eta: str,
+    ) -> None:
+        self.progress_widget.update_progress(
+            processed,
+            total,
+            elapsed,
+            eta,
+        )
+
+
+if __name__ == "__main__":
+    app = QApplication([])
+    window = MainWindow()
+    window.show()
+    app.exec()
