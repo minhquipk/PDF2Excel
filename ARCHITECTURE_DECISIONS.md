@@ -189,3 +189,49 @@ System must preserve Vietnamese Unicode text end-to-end.
 Regex parsing belongs to a dedicated parser module.
 
 Worker must not contain regex patterns.
+
+------------------------------------------------------------------------
+
+## ADR-016 --- Regular Expressions
+
+Status: Accepted
+
+PDFReader converts PyMuPDF objects into domain models only.
+
+No business logic.
+
+No parser.
+
+No OCR.
+
+------------------------------------------------------------------------
+
+## ADR-017 --- Regular Expressions
+
+Status: Accepted
+
+Implementation must follow frozen domain models.
+
+Implementation never changes models during development.
+
+------------------------------------------------------------------------
+
+## ADR-018 --- Regular Expressions
+
+Status: Accepted
+
+Implementation decisions are based on the current source code.
+
+Chat history is not authoritative.
+
+------------------------------------------------------------------------
+
+## ADR-019 --- Regular Expressions
+
+Status: Accepted
+
+Future document analysis will build a reusable knowledge cache.
+
+Machine learning is intentionally excluded.
+
+Knowledge grows deterministically from processed documents.

@@ -46,17 +46,21 @@ class FileDialog:
     """Bộ lọc File Dialog."""
     PDF_FILTER = "PDF Files (*.pdf)"
     EXCEL_FILTER = "Excel Files (*.xlsx)"
-
     ALL_FILES = "All Files (*.*)"
 
 
 class Report:
     """Cấu hình xuất báo cáo."""
     FOLDER = "reports"
-
     FILE_PREFIX = "Report"
-
     FILE_EXTENSION = ".txt"
+
+
+class Progress:
+    """Cấu hình hiển thị tiến trình."""
+    PERCENT_MIN = 0
+    PERCENT_MAX = 100
+    TIME_PLACEHOLDER = "--:--:--"
 
 
 class UIText:
@@ -85,3 +89,21 @@ class UIText:
     PROCESSING = "Processing..."
     COMPLETED = "Completed."
     CANCELLED = "Cancelled."
+
+    # Progress
+    PROGRESS_GROUP = "Processing Progress"
+    PROCESSED = "Processed"
+    PERCENT = "Percent"
+    ELAPSED = "Elapsed"
+    ETA = "ETA"
+    PROGRESS_COUNT_FORMAT = "{processed} / {total}"
+    PROGRESS_PERCENT_FORMAT = "{percent} %"
+
+    # Dialogs and messages
+    SELECT_INPUT_FOLDER = "Select PDF Folder"
+    SELECT_EXCEL_TEMPLATE = "Select Excel Template"
+    WARNING_TITLE = "Warning"
+    REPORT_TITLE = "Report"
+    INPUT_FOLDER_REQUIRED = "Please select an input folder."
+    OUTPUT_EXCEL_REQUIRED = "Please select an output Excel file."
+    REPORT_PENDING = "Report feature will be implemented later."

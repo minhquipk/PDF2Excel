@@ -13,6 +13,7 @@ class PDFType(str, Enum):
     """Kiểu của file PDF."""
     DIGITAL = "Digital"
     OCR = "OCR"
+    HYBRID = "Hybrid"
 
 
 class ProcessStatus(str, Enum):
@@ -67,3 +68,23 @@ class ErrorType(str, Enum):
     EXCEL = "Excel Error"
 
     UNKNOWN = "Unknown Error"
+
+
+class ConfidenceLevel(str, Enum):
+    """Biểu diễn ngữ nghĩa của final confidence."""
+    VERY_LOW = "Very Low"
+    LOW = "Low"
+    MEDIUM = "Medium"
+    HIGH = "High"
+    VERY_HIGH = "Very High"
+
+
+class RuleCategory(str, Enum):
+    """Nhóm đặc trưng mà một heuristic rule đánh giá."""
+    DOCUMENT = "Document"
+    TEXT = "Text"
+    IMAGE = "Image"
+    GRAPHICS = "Graphics"
+    LAYOUT = "Layout"
+    CONSISTENCY = "Consistency"
+    QUALITY = "Quality"

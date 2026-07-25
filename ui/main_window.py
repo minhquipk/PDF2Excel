@@ -1,5 +1,5 @@
 from __future__ import annotations
-from core.constants import App
+from core.constants import FileDialog, Table, UIText, Window
 from models.processing_table_model import ProcessingTableModel
 from ui.widgets import PathSelectorWidget, ProgressWidget, ProcessingTable
 from PySide6.QtCore import QThread
@@ -33,8 +33,9 @@ class MainWindow(QMainWindow):
         self._worker.moveToThread(self._thread)
         self._table_model = ProcessingTableModel()
 
-        self.setWindowTitle(App.NAME)
-        self.resize(1200, 800)
+        self.setWindowTitle(UIText.TITLE)
+        self.resize(Window.WIDTH, Window.HEIGHT)
+        self.setMinimumSize(Window.MIN_WIDTH, Window.MIN_HEIGHT)
 
         self._create_widgets()
         self._create_layout()
@@ -46,18 +47,20 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _create_widgets(self) -> None:
-        self.input_widget = PathSelectorWidget("Input Folder")
-        self.output_widget = PathSelectorWidget("Output Excel")
+        self.input_widget = PathSelectorWidget(UIText.INPUT_FOLDER)
+        self.output_widget = PathSelectorWidget(UIText.OUTPUT_EXCEL)
 
-        self.btn_start = QPushButton("Start")
-        self.btn_stop = QPushButton("Stop")
-        self.btn_report = QPushButton("Report")
-        self.btn_exit = QPushButton("Exit")
+        self.btn_start = QPushButton(UIText.BUTTON_START)
+        self.btn_stop = QPushButton(UIText.BUTTON_STOP)
+        self.btn_report = QPushButton(UIText.BUTTON_REPORT)
+        self.btn_exit = QPushButton(UIText.BUTTON_EXIT)
 
         self.progress_widget = ProgressWidget()
         self.processing_table = ProcessingTable()
         self.processing_table.set_model(self._table_model)
-        self._worker.file_processed.connect(self._table_model.append)
+        self.processing_table.resize_columns(
+            [Table.COLUMN_WIDTH[header] for header in Table.HEADERS]
+        )
 
     def _create_layout(self) -> None:
         central = QWidget()
@@ -118,26 +121,37 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _browse_input(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select PDF Folder")
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            UIText.SELECT_INPUT_FOLDER,
+        )
         if folder:
             self.input_widget.set_path(folder)
 
     def _browse_output(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Excel Template",
+            UIText.SELECT_EXCEL_TEMPLATE,
             "",
-            "Excel Files (*.xlsx)",
+            FileDialog.EXCEL_FILTER,
         )
         if file_name:
             self.output_widget.set_path(file_name)
 
     def _start(self) -> None:
         if not self.input_widget.path():
-            QMessageBox.warning(self, "Warning", "Please select an input folder.")
+            QMessageBox.warning(
+                self,
+                UIText.WARNING_TITLE,
+                UIText.INPUT_FOLDER_REQUIRED,
+            )
             return
         if not self.output_widget.path():
-            QMessageBox.warning(self, "Warning", "Please select an output Excel file.")
+            QMessageBox.warning(
+                self,
+                UIText.WARNING_TITLE,
+                UIText.OUTPUT_EXCEL_REQUIRED,
+            )
             return
 
         self._table_model.clear()
@@ -155,8 +169,8 @@ class MainWindow(QMainWindow):
     def _report(self) -> None:
         QMessageBox.information(
             self,
-            "Report",
-            "Report feature will be implemented later."
+            UIText.REPORT_TITLE,
+            UIText.REPORT_PENDING,
         )
 
     # ------------------------------------------------------------------

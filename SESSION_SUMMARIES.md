@@ -132,3 +132,84 @@ The next milestone is replacing mock processing with the real PDF pipeline.
 ### Next Session
 
 ### Notes
+
+---
+
+# Session 2026-07-23
+
+## Objective
+Begin implementation of the real PDF processing pipeline.
+
+## Completed
+
+### Domain
+
+- models.py frozen.
+- UTC timestamp initialization standardized.
+- PDFDocument.text retained.
+
+## Architecture
+
+- Reader boundary finalized.
+- Analyzer responsibility finalized.
+- Knowledge Cache architecture defined.
+
+## Development Process
+
+- Source code becomes the implementation reference.
+- New implementation workflow established.
+- Design Freeze before coding adopted.
+
+## PDF Reader
+
+- Initial implementation completed.
+- API review performed.
+- Helper structure refined.
+- Naming convention reviewed.
+
+## Architecture Decisions
+
+- Reader only reads.
+- Parser owns invoice extraction. 
+- Analyzer owns knowledge accumulation.
+- Domain drives implementation.
+
+## Issues Encountered
+
+## PyMuPDF API
+
+### Problem:
+
+- IDE reference/type warnings.
+
+### Resolution:
+
+- Validate against installed library version before implementation.
+
+## Development Process
+
+### Problem:
+
+- Excessive architectural discussion during implementation.
+
+### Resolution:
+
+- Freeze architecture before coding.
+- Prioritize implementation and review.
+
+## Validation
+
+### Verified:
+
+- models.py matches Reader design.
+- One-PDF-at-a-time strategy remains unchanged.
+- Complete document text retained for future parsing.
+
+## Next Session
+
+### Priority:
+
+1. Freeze pdf_reader.py
+2. Integrate processor.py
+3. Replace Mock pipeline
+4. Begin Analyzer

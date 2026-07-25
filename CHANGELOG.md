@@ -14,7 +14,7 @@ rather than Git commits.
 -   Implement `pdf_reader.py`
 -   Implement `regex_parser.py`
 -   Implement `excel_writer.py`
--   Replace Mock mode with real PDF processing
+-   Integrate PDF Reader and PDF Detector into Worker
 -   Implement OCR pipeline
 -   Implement Report export
 
@@ -135,3 +135,33 @@ rather than Git commits.
 -   Report exporter
 -   ETA calculation
 -   Elapsed time calculation
+
+------------------------------------------------------------------------
+
+2026-07
+## Architecture Refinement
+
+### Added
+
+- Freeze PDF Reader responsibility.
+- Freeze Domain-first implementation strategy.
+- Freeze Knowledge Cache architecture.
+- Freeze Source Code as the single implementation reference.
+
+### Changed
+
+- PDF processing workflow clarified.
+- Development workflow updated.
+- Reader/Analyzer responsibilities separated.
+
+## Core
+
+### Added
+
+- Initial implementation of pdf_reader.py.
+
+### Decisions
+
+- Reader maps PyMuPDF objects to domain models only.
+- Parser will operate on complete PDFDocument.
+- Analyzer will reuse document statistics.

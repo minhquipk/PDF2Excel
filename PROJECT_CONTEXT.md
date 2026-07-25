@@ -42,7 +42,7 @@ Worker (QThread)
     ▼
 _process_pdf()
     │
-    ├── PDF Reader
+    ├── PDF Reader → PDF Detector
     ├── OCR Reader (future)
     ├── Regex Parser
     └── InvoiceInfo
@@ -68,32 +68,35 @@ Communication is only through Qt Signals.
 # 3. Current Project Structure
 
 ```
-project/
+PDF2Excel/
 
-constants.py
-enums.py
-models.py
+    config.py
+    main.py
 
-main.py
+    ui/
+        base_widget.py
+        widgets.py
+        main_window.py
+        theme.py
+        worker.py
 
-ui/
-    base_widget.py
-    widgets.py
-    main_window.py
-    theme.py
-    progress_dialog.py
+    models/
+        processing_table_model.py
 
-models/
-    processing_table_model.py
+    utils/
+        logger.py
 
-workers/
-    worker.py
-
-future/
-    pdf_reader.py
-    ocr_reader.py
-    regex_parser.py
-    excel_writer.py
+    core/
+        constants.py
+        enums.py
+        excel_writer.py
+        extractor.py
+        models.py
+        ocr_engine.py
+        parser.py
+        pdf_detector.py
+        pdf_reader.py
+        processor.py
 ```
 
 ---
@@ -105,6 +108,8 @@ Completed:
 - constants.py
 - enums.py
 - models.py
+- pdf_reader.py
+- pdf_detector.py
 - base_widget.py
 - widgets.py
 - main_window.py
@@ -122,7 +127,8 @@ Current UI features:
 - Progress bar
 - Processing table
 
-Mock workflow is operational.
+PDF Reader and Detector workflow is operational. Extraction, OCR, Excel
+writing and report export remain pending.
 
 ---
 
@@ -133,7 +139,11 @@ PDF
 
 ↓
 
-_process_pdf()
+PDF Reader
+
+↓
+
+PDF Detector
 
 ↓
 
@@ -208,31 +218,15 @@ PDF
 
 ↓
 
-Digital ?
+PDF Reader
 
 ↓
 
-YES → PDF Reader
+PDF Detector
 
 ↓
 
-Regex
-
-↓
-
-InvoiceInfo
-
-↓
-
-PDFResult
-
-or
-
-PDF
-
-↓
-
-OCR
+Processing strategy
 
 ↓
 
@@ -245,8 +239,54 @@ InvoiceInfo
 ↓
 
 PDFResult
+
+The detector is a deterministic reasoning engine. It receives only an
+immutable PDFDocument, builds an immutable AnalysisContext, preserves all
+heuristic Evidence, optionally consults a read-only KnowledgeRecord, and
+returns an immutable DocumentAnalysis with explainable Confidence.
 
 ---
+
+## Reader Responsibility
+
+PDFReader is responsible only for reading PDF content and converting
+PyMuPDF objects into immutable domain models.
+
+PDFReader MUST NOT perform:
+
+- OCR
+- Regex parsing
+- Invoice extraction
+- PDF classification
+- Data analysis
+- Business validation
+
+PDFReader is the boundary between PyMuPDF and the project domain.
+
+## PDFDocument Strategy
+
+PDFDocument keeps the complete document text.
+
+Reason:
+
+Parser benefits from preserving page relationships and document context.
+
+Memory usage remains acceptable because only one PDF is processed at a time.
+
+## Analyzer Strategy
+
+Analyzer is responsible for collecting document statistics and building
+a reusable knowledge cache.
+
+Analyzer does not perform OCR or machine learning.
+
+Knowledge grows incrementally from previous processing sessions.
+
+## Source of Truth
+
+Implementation must always be based on the current project source code.
+
+Chat history must never be treated as the implementation reference.
 
 # 7. UI Design
 

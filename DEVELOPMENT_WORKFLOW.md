@@ -132,9 +132,12 @@ Test
 
 ## Rule 4
 
-Always review existing source code before proposing changes.
+Always review the current project source code before proposing
+architecture or implementation.
 
-Never assume code exists.
+Source code is the only implementation reference.
+
+Never rely on chat history.
 
 ---
 
@@ -199,3 +202,47 @@ When a design decision becomes stable,
 update PROJECT_CONTEXT.md.
 
 Do not rely on chat history.
+
+---
+
+## Rule 11
+
+Freeze design before implementation.
+
+After implementation starts:
+
+- Prefer coding over discussion.
+- Review after implementation.
+- Avoid reopening architectural discussions unless required.
+
+---
+
+## Rule 12
+
+Implementation workflow:
+
+Discussion
+
+↓
+
+Architecture Freeze
+
+↓
+
+Review Source
+
+↓
+
+Implementation
+
+↓
+
+Review
+
+↓
+
+Fix
+
+↓
+
+Freeze

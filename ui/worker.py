@@ -2,7 +2,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 from PySide6.QtCore import QObject, Signal, Slot
-from core.models import PDFResult
+from core.enums import PDFType, ProcessStatus
+from core.models import AnalysisMode, DocumentAnalysis, PDFResult
+from core.pdf_detector import PDFDetector
+from core.pdf_reader import PDFReader
 
 
 class Worker(QObject):
@@ -22,7 +25,8 @@ class Worker(QObject):
         self._results: list[PDFResult] = []
         self._cancel_requested = False
 
-        self._pdf_reader = None
+        self._pdf_reader = PDFReader()
+        self._pdf_detector = PDFDetector()
         self._ocr_reader = None
         self._parser = None
         self._excel_writer = None
@@ -70,12 +74,55 @@ class Worker(QObject):
         self._write_excel()
         self.finished.emit()
 
-    @staticmethod
-    def _process_pdf(pdf_file: Path) -> PDFResult:
-        result = PDFResult()
-        result.source_file = pdf_file
-        result.file_name = pdf_file.name
+    def _process_pdf(self, pdf_file: Path) -> PDFResult:
+        """Read and classify one PDF without accessing the UI."""
+        relative_path = pdf_file
+        if self._input_folder is not None:
+            relative_path = pdf_file.relative_to(self._input_folder)
+
+        result = PDFResult(
+            source_file=pdf_file,
+            relative_path=relative_path,
+            file_name=pdf_file.name,
+        )
+
+        try:
+            document = self._pdf_reader.read(pdf_file)
+            analysis = self._pdf_detector.analyze(document)
+        except Exception as error:
+            result.status = ProcessStatus.FAILED
+            result.note = f"{type(error).__name__}: {error}"
+            return result
+
+        result.pdf_type = self._result_pdf_type(analysis.mode)
+        result.status = (
+            ProcessStatus.WARNING
+            if analysis.mode is AnalysisMode.UNKNOWN
+            else ProcessStatus.SUCCESS
+        )
+        result.note = self._format_analysis_note(analysis)
         return result
+
+    @staticmethod
+    def _result_pdf_type(mode: AnalysisMode) -> PDFType | None:
+        if mode is AnalysisMode.DIGITAL:
+            return PDFType.DIGITAL
+        if mode is AnalysisMode.SCANNED:
+            return PDFType.OCR
+        if mode is AnalysisMode.HYBRID:
+            return PDFType.HYBRID
+        return None
+
+    @staticmethod
+    def _format_analysis_note(analysis: DocumentAnalysis) -> str:
+        note = (
+            f"Detected {analysis.mode.name} "
+            f"({analysis.confidence.level.value}: "
+            f"{analysis.confidence.score:.2f})."
+        )
+        if analysis.warnings:
+            return f"{note} {analysis.warnings[0]}"
+        return note
 
     def _write_excel(self) -> None:
         pass
