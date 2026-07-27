@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Iterable
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from core.constants import Table
 from core.models import PDFResult
 from enum import IntEnum
 
@@ -12,7 +13,7 @@ class Column(IntEnum):
     NOTE = 3
 
 
-_HEADERS = ("PDF", "TYPE", "STATUS", "NOTE")
+_HEADERS = Table.HEADERS
 
 
 assert len(_HEADERS) == len(Column)

@@ -6,6 +6,7 @@ Hiện tại:
 from __future__ import annotations
 from pathlib import Path
 from PySide6.QtCore import Signal
+from core.constants import Progress, UIText
 from base_widget import BaseWidget
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -48,7 +49,7 @@ class PathSelectorWidget(BaseWidget):
     def __init__(
         self,
         title: str,
-        button_text: str = "Browse...",
+        button_text: str = UIText.BUTTON_INPUT,
         parent=None,
     ) -> None:
 
@@ -143,27 +144,29 @@ class ProgressWidget(BaseWidget):
     def _create_widgets(self):
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setMinimum(0)
-        self.progress_bar.setMaximum(100)
-        self.progress_bar.setValue(0)
+        self.progress_bar.setMinimum(Progress.PERCENT_MIN)
+        self.progress_bar.setMaximum(Progress.PERCENT_MAX)
+        self.progress_bar.setValue(Progress.PERCENT_MIN)
 
-        self.lbl_progress = QLabel("0 / 0")
-        self.lbl_percent = QLabel("0 %")
+        self.lbl_progress = QLabel(
+            UIText.PROGRESS_COUNT_FORMAT.format(processed=0, total=0)
+        )
+        self.lbl_percent = QLabel(UIText.PROGRESS_PERCENT_FORMAT.format(percent=0))
 
-        self.lbl_elapsed = QLabel("--:--:--")
-        self.lbl_eta = QLabel("--:--:--")
+        self.lbl_elapsed = QLabel(Progress.TIME_PLACEHOLDER)
+        self.lbl_eta = QLabel(Progress.TIME_PLACEHOLDER)
 
     def _create_layout(self):
 
         form = QFormLayout()
 
-        form.addRow("Progress", self.progress_bar)
-        form.addRow("Processed", self.lbl_progress)
-        form.addRow("Percent", self.lbl_percent)
-        form.addRow("Elapsed", self.lbl_elapsed)
-        form.addRow("ETA", self.lbl_eta)
+        form.addRow(UIText.PROGRESS, self.progress_bar)
+        form.addRow(UIText.PROCESSED, self.lbl_progress)
+        form.addRow(UIText.PERCENT, self.lbl_percent)
+        form.addRow(UIText.ELAPSED, self.lbl_elapsed)
+        form.addRow(UIText.ETA, self.lbl_eta)
 
-        group = QGroupBox("Processing Progress")
+        group = QGroupBox(UIText.PROGRESS_GROUP)
         group.setLayout(form)
 
         layout = QVBoxLayout(self)
@@ -181,8 +184,8 @@ class ProgressWidget(BaseWidget):
         self,
         processed: int,
         total: int,
-        elapsed: str = "--:--:--",
-        eta: str = "--:--:--",
+        elapsed: str = Progress.TIME_PLACEHOLDER,
+        eta: str = Progress.TIME_PLACEHOLDER,
     ) -> None:
         """Cập nhật toàn bộ thông tin tiến trình."""
         percent = 0
@@ -192,9 +195,16 @@ class ProgressWidget(BaseWidget):
 
         self.progress_bar.setValue(percent)
 
-        self.lbl_progress.setText(f"{processed} / {total}")
+        self.lbl_progress.setText(
+            UIText.PROGRESS_COUNT_FORMAT.format(
+                processed=processed,
+                total=total,
+            )
+        )
 
-        self.lbl_percent.setText(f"{percent} %")
+        self.lbl_percent.setText(
+            UIText.PROGRESS_PERCENT_FORMAT.format(percent=percent)
+        )
 
         self.lbl_elapsed.setText(elapsed)
 
@@ -235,7 +245,7 @@ class ProcessingTable(BaseWidget):
 
     def _create_widgets(self):
 
-        self.lbl_title = QLabel("Processing Status")
+        self.lbl_title = QLabel(UIText.TABLE_TITLE)
 
         self.table = QTableView()
 
