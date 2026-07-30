@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 from json import dumps
-
+from collections.abc import Iterable
 from core.enums import ConfidenceLevel, RuleCategory
 from core.models import (
     AnalysisContext,
@@ -441,5 +441,5 @@ class PDFDetector:
         return max(0.0, min(1.0, value))
 
     @staticmethod
-    def _unique_strings(values: object) -> tuple[str, ...]:
+    def _unique_strings(values: Iterable[str]) -> tuple[str, ...]:
         return tuple(dict.fromkeys(values))

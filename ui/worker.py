@@ -3,9 +3,10 @@ from pathlib import Path
 from typing import Optional
 from PySide6.QtCore import QObject, Signal, Slot
 from core.enums import PDFType, ProcessStatus
-from core.models import AnalysisMode, DocumentAnalysis, PDFResult
+from core.models import AnalysisMode, DocumentAnalysis, PDFResult, ExtractionResult
 from core.pdf_detector import PDFDetector
 from core.pdf_reader import PDFReader
+from core.extractor import Extractor
 
 
 class Worker(QObject):
@@ -27,6 +28,7 @@ class Worker(QObject):
 
         self._pdf_reader = PDFReader()
         self._pdf_detector = PDFDetector()
+        self._extractor = Extractor()
         self._ocr_reader = None
         self._parser = None
         self._excel_writer = None
@@ -75,7 +77,7 @@ class Worker(QObject):
         self.finished.emit()
 
     def _process_pdf(self, pdf_file: Path) -> PDFResult:
-        """Read and classify one PDF without accessing the UI."""
+        """Read, classify, and extract one PDF without accessing the UI."""
         relative_path = pdf_file
         if self._input_folder is not None:
             relative_path = pdf_file.relative_to(self._input_folder)
@@ -94,13 +96,22 @@ class Worker(QObject):
             result.note = f"{type(error).__name__}: {error}"
             return result
 
+        extraction: ExtractionResult | None = None
+        if analysis.mode is not AnalysisMode.UNKNOWN:
+            try:
+                extraction = self._extractor.extract(document, analysis)
+            except Exception as error:
+                result.status = ProcessStatus.FAILED
+                result.note = f"{type(error).__name__}: {error}"
+                return result
+
         result.pdf_type = self._result_pdf_type(analysis.mode)
         result.status = (
             ProcessStatus.WARNING
             if analysis.mode is AnalysisMode.UNKNOWN
             else ProcessStatus.SUCCESS
         )
-        result.note = self._format_analysis_note(analysis)
+        result.note = self._format_note(analysis, extraction)
         return result
 
     @staticmethod
@@ -114,14 +125,22 @@ class Worker(QObject):
         return None
 
     @staticmethod
-    def _format_analysis_note(analysis: DocumentAnalysis) -> str:
+    def _format_note(
+            analysis: DocumentAnalysis,
+            extraction: ExtractionResult | None,
+    ) -> str:
         note = (
             f"Detected {analysis.mode.name} "
             f"({analysis.confidence.level.value}: "
             f"{analysis.confidence.score:.2f})."
         )
+
+        if extraction is not None and extraction.warnings:
+            return f"{note} {extraction.warnings[0]}"
+
         if analysis.warnings:
             return f"{note} {analysis.warnings[0]}"
+
         return note
 
     def _write_excel(self) -> None:

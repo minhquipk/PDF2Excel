@@ -42,19 +42,26 @@ Worker (QThread)
     ▼
 _process_pdf()
     │
-    ├── PDF Reader → PDF Detector
-    ├── OCR Reader (future)
-    ├── Regex Parser
-    └── InvoiceInfo
-            │
-            ▼
-        PDFResult
-            │
-            ▼
+    ▼
+PDFReader
+    │
+    ▼
+PDFDetector
+    │
+    ▼
+Extractor ──(quyết định gọi khi cần OCR)──> OCREngine
+    │
+    ▼
+Parser (pending)
+    │
+    ▼
+PDFResult
+    │
+    ▼
 Memory (list[PDFResult])
-            │
-            ▼
-Excel Writer
+    │
+    ▼
+ExcelWriter (pending)
 ```
 
 UI is completely separated from business logic.
@@ -108,12 +115,24 @@ Completed:
 - constants.py
 - enums.py
 - models.py
-- pdf_reader.py
-- pdf_detector.py
+- pdf_reader.py — reads PDF via PyMuPDF, builds `PDFDocument`;
+  also reads raw word tuples (`words`) and renders a raw grayscale
+  `PageImage` (300 DPI) for every page.
+- pdf_detector.py — full reasoning engine (Build Context, Heuristic
+  Evaluation, Knowledge Lookup, Confidence Composition, Final
+  Decision) per `PDF_Detector_Technical_Design.docx`.
+- extractor.py — dispatches extraction strategy per
+  `DocumentAnalysis.mode` (Digital / OCR / per-page Hybrid);
+  normalizes word geometry (incl. rotation reconciliation for the
+  Digital path) into `WordToken`s ready for Parser.
+- ocr_engine.py — Mock implementation only (ADR-013); contract is
+  final, real OCR backend not yet wired in.
 - base_widget.py
 - widgets.py
 - main_window.py
-- worker.py (framework)
+- worker.py — pipeline integration completed: Reader → Detector →
+  Extractor (conditional on a valid mode). Excel writing and invoice
+  parsing remain pending.
 - processing_table_model.py
 
 Current UI features:
@@ -127,35 +146,48 @@ Current UI features:
 - Progress bar
 - Processing table
 
-PDF Reader and Detector workflow is operational. Extraction, OCR, Excel
-writing and report export remain pending.
+Still pending (not yet implemented):
+
+- parser.py (regex-based invoice parsing, consuming
+  `ExtractionResult.words_by_page`)
+- excel_writer.py
+- Report export
+- Real OCR backend (ocr_engine.py currently Mock only)
+- config.py / main.py (entry point not yet assembled)
+
+Note: `core/processor.py` currently contains only placeholder method
+calls (`start/stop/pause/resume`) with no implementation. The actual
+orchestrator responsibility (per ADR-004) is currently fulfilled by
+`Worker.process()`, not by `processor.py`. This needs clarification
+(see Section 14).
+
+Known limitation (deferred to v2.0): pages with both a text layer and
+materially relevant image content are extracted from a single source
+only (text-layer wins). See CHANGELOG.md / SESSION_SUMMARIES.md,
+Session 2026-07-31.
 
 ---
 
 # 5. Data Flow
 
 ```
-PDF
-
-↓
-
-PDF Reader
-
-↓
-
-PDF Detector
-
-↓
-
+Path
+  ↓ (PDFReader.read)
+PDFDocument
+  ↓ (PDFDetector.analyze)
+DocumentAnalysis  ──┐
+  ↓                 │ (cả 2 cùng làm input cho Extractor)
+PDFDocument ─────────┘
+  ↓ (Extractor.extract)
+ExtractionResult
+  ↓ (Parser — pending)
+InvoiceInfo
+  ↓
 PDFResult
-
-↓
-
+  ↓ (accumulate)
 list[PDFResult]
-
-↓
-
-Excel Writer
+  ↓ (ExcelWriter — pending)
+.xlsx
 ```
 
 The application NEVER writes Excel while processing each PDF.
@@ -205,6 +237,8 @@ for pdf in pdf_files:
 
 _write_excel()
 ```
+This orchestrator responsibility is currently implemented as
+`Worker.process()` in `ui/worker.py`.
 
 ---
 
@@ -212,7 +246,7 @@ _write_excel()
 
 All business logic belongs here.
 
-Future implementation:
+Current implementation (`Worker._process_pdf()`):
 
 PDF
 
@@ -226,24 +260,17 @@ PDF Detector
 
 ↓
 
-Processing strategy
-
-↓
-
-Regex
-
-↓
-
-InvoiceInfo
-
-↓
-
-PDFResult
+PDFResult (pdf_type / status / note derived from DocumentAnalysis)
 
 The detector is a deterministic reasoning engine. It receives only an
 immutable PDFDocument, builds an immutable AnalysisContext, preserves all
 heuristic Evidence, optionally consults a read-only KnowledgeRecord, and
 returns an immutable DocumentAnalysis with explainable Confidence.
+
+This integration is now real (not Mock) — `Worker._process_pdf()` calls
+`PDFReader.read()` and `PDFDetector.analyze()` directly. Extraction,
+regex parsing, and Excel writing are still pending and not yet wired
+into this method.
 
 ---
 
@@ -281,6 +308,12 @@ a reusable knowledge cache.
 Analyzer does not perform OCR or machine learning.
 
 Knowledge grows incrementally from previous processing sessions.
+
+Note: in the current source, this "Analyzer" role is fulfilled by
+`PDFDetector` (Rule System + Confidence Model) as designed in
+`PDF_Detector_Technical_Design.docx`. `KnowledgeRecord` accumulation /
+lifecycle management (Knowledge System, TDS Chapter 9) is defined at
+the design level but not yet implemented in source.
 
 ## Source of Truth
 
@@ -373,15 +406,19 @@ GUI
 
 PDF
 
-- pdfplumber (planned)
+- PyMuPDF (fitz) — in use by pdf_reader.py (text, words, and page
+  image rendering)
 
 OCR
 
-- pytesseract (planned)
+- Backend not yet chosen; `ocr_engine.py` currently a Mock (ADR-013).
+  `pytesseract` remains the leading candidate (planned).
 
 Image
 
-- pdf2image (planned)
+- No separate library needed for rendering — PyMuPDF's
+  `Page.get_pixmap()` covers this (see ADR-026). `pdf2image` is not
+  currently required.
 
 Excel
 
@@ -437,18 +474,22 @@ Continue.
 
 # 13. Mock Mode
 
-Mock mode is mandatory before implementing real PDF processing.
+Mock mode was used before implementing real PDF processing.
 
-Worker generates fake PDFResult objects.
+Worker generated fake PDFResult objects during early UI/Worker/Thread
+validation.
 
-Purpose:
+Purpose (historical):
 
 - Test UI
 - Test Thread
 - Test Signals
 - Test TableModel
 
-No business logic.
+Current status: Mock processing has been replaced by the real
+PDFReader → PDFDetector pipeline in `Worker._process_pdf()` for the
+detection stage. Extraction, parsing, OCR and Excel writing are not
+yet implemented, so the pipeline is not yet end-to-end functional.
 
 ---
 
@@ -459,10 +500,34 @@ Current:
 - Elapsed Time not implemented.
 - ETA not implemented.
 - Report export not implemented.
-- OCR not implemented.
-- PDF Reader not implemented.
 - Regex Parser not implemented.
 - Excel Writer not implemented.
+- Real OCR backend not implemented (`ocr_engine.py` is Mock only).
+- `core/processor.py` is a placeholder (4 undefined method calls);
+  its relationship to `Worker.process()` (which currently acts as
+  the real orchestrator) needs clarification.
+- Possible import path issues to verify: `core/models.py` uses
+  `from enums import ...` and `ui/widgets.py` uses
+  `from base_widget import ...` (missing package prefix).
+- PDFDetector Rule System currently implements 5 of 7 Rule
+  Categories defined in the TDS (§7.2): Text, Image, Consistency,
+  Quality, Layout are implemented; Document and Graphics rule
+  categories are not yet implemented.
+- Knowledge System (TDS Chapter 9: lifecycle, governance, sources)
+  is defined at the design level only; no persistence/lifecycle
+  management exists in source yet.
+- Extractor routes mixed-content pages (text + image) to a single
+  source only; dual-source extraction deferred to v2.0 (see
+  Section 4).
+- No automated test suite exists; `Extractor._rotate_bbox()` in
+  particular is a good candidate for dedicated unit tests before
+  further logic is built on top of it.
+
+Resolved (previously listed here, now implemented — see Section 4):
+
+- PDF Reader — implemented (`core/pdf_reader.py`).
+- PDF Detector reasoning engine — implemented (`core/pdf_detector.py`).
+- Extractor — implemented (`core/extractor.py`).
 
 ---
 
@@ -472,27 +537,19 @@ Priority order:
 
 1.
 
-pdf_reader.py
+parser.py (regex-based invoice parsing)
 
 ↓
 
-Read Digital PDF
-
-↓
-
-Return text
-
-2.
-
-regex_parser.py
-
-↓
-
-Text
+ExtractionResult.words_by_page
 
 ↓
 
 InvoiceInfo
+
+2.
+
+Unit tests for Extractor._rotate_bbox() (four rotation cases)
 
 3.
 
@@ -508,11 +565,15 @@ Excel
 
 4.
 
-OCR Reader
+Real OCR backend (replace ocr_engine.py Mock)
 
 5.
 
 Error Report
+
+6.
+
+Resolve processor.py role vs Worker.process()
 
 ---
 

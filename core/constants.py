@@ -56,6 +56,12 @@ class Report:
     FILE_EXTENSION = ".txt"
 
 
+class Image:
+    """Cấu hình render ảnh trang PDF."""
+    DPI = 300
+    COLORSPACE = "gray"
+
+
 class Progress:
     """Cấu hình hiển thị tiến trình."""
     PERCENT_MIN = 0

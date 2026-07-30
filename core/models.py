@@ -17,7 +17,7 @@ from datetime import date, datetime, UTC
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Optional, Any, Mapping
-from enums import (
+from core.enums import (
     ConfidenceLevel,
     ErrorType,
     PDFType,
@@ -105,7 +105,7 @@ class ProcessError:
 # ======================================================================
 
 @dataclass(slots=True)
-class ExtractionResult:
+class SessionResult:
     """Kết quả của toàn bộ phiên xử lý."""
     invoices: list[InvoiceInfo] = field(default_factory=list)
     pdf_results: list[PDFResult] = field(default_factory=list)
@@ -156,6 +156,15 @@ class Confidence:
 
 
 @dataclass(slots=True, frozen=True)
+class WordToken:
+    """Một từ đã được chuẩn hoá bởi Extractor, kèm vị trí hình học."""
+    text: str
+    normalized_bbox: tuple[float, float, float, float]  # x_min, y_min, x_max, y_max — miền [0.0, 1.0]
+    confidence: float | None = None   # None cho nguồn Digital; có giá trị khi nguồn là OCR
+    source: str = "digital"           # "digital" | "ocr"
+
+
+@dataclass(slots=True, frozen=True)
 class PageStatistics:
     """
     Thống kê thông tin một page PDF
@@ -185,11 +194,25 @@ class PageStatistics:
 
 
 @dataclass(slots=True, frozen=True)
+class PageImage:
+    """Raw grayscale pixmap của một trang PDF đã được render, tự mô tả."""
+    samples: bytes   # raw grayscale bytes, 1 byte/pixel, row-major
+    width: int        # pixel width
+    height: int        # pixel height
+    dpi: int            # DPI dùng khi render — có thể truy vết
+
+
+@dataclass(slots=True, frozen=True)
 class PDFPage:
     """Dữ liệu text của một page PDF."""
     page_index: int
     text: str
     statistics: PageStatistics
+    words: tuple[tuple[float, float, float, float, str, int, int, int], ...] = ()
+    page_image: PageImage | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "words", tuple(self.words))
 
     @property
     def has_text(self) -> bool:
@@ -325,3 +348,19 @@ class AnalysisContext:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metadata", _freeze_value(self.metadata))
+
+
+@dataclass(slots=True, frozen=True)
+class ExtractionResult:
+    """Kết quả trích xuất của Extractor cho một PDFDocument, sẵn sàng cho Parser."""
+    source_mode: AnalysisMode
+    words_by_page: Mapping[int, tuple[WordToken, ...]]
+    page_images: Mapping[int, PageImage] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    warnings: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "words_by_page", _freeze_value(self.words_by_page))
+        object.__setattr__(self, "page_images", _freeze_value(self.page_images))
+        object.__setattr__(self, "warnings", _freeze_value(self.warnings))

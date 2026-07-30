@@ -4,8 +4,9 @@ from pathlib import Path
 from typing import Any
 
 import fitz
-
+from core.constants import Image
 from core.models import (
+    PageImage,
     PDFDocument,
     PDFPage,
     PageStatistics,
@@ -55,7 +56,7 @@ class PDFReader:
     def _read_pages(
         self,
         document: fitz.Document,
-    ) -> list[PDFPage]:
+    ) -> tuple[PDFPage, ...]:
         """
         Read every page in document.
         """
@@ -70,7 +71,7 @@ class PDFReader:
 
             pages.append(page)
 
-        return pages
+        return tuple(pages)
 
     def _read_page(
         self,
@@ -84,16 +85,21 @@ class PDFReader:
         page = document.load_page(page_index)
 
         text = page.get_text("text")
+        words = page.get_text("words")
 
         statistics = self._read_statistics(
             page=page,
             text=text,
         )
 
+        page_image = self._render_page_image(page)
+
         return PDFPage(
             page_index=page_index,
             text=text,
             statistics=statistics,
+            words=words,
+            page_image=page_image,
         )
 
     def _read_statistics(
@@ -117,6 +123,21 @@ class PDFReader:
             width=page.rect.width,
             height=page.rect.height,
             rotation=page.rotation,
+        )
+
+    @staticmethod
+    def _render_page_image(page: fitz.Page) -> PageImage:
+        """
+        Render page thành ảnh grayscale, raw pixmap samples.
+        """
+
+        pixmap = page.get_pixmap(dpi=Image.DPI, colorspace=fitz.csGRAY)
+
+        return PageImage(
+            samples=pixmap.samples,
+            width=pixmap.width,
+            height=pixmap.height,
+            dpi=Image.DPI,
         )
 
     @staticmethod
