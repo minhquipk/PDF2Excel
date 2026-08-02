@@ -576,3 +576,189 @@ reconstruction caveat as the previous session applies: this entry
 documents what was decided and implemented, based on the discussion
 and the user's explicit confirmations, not a live line-by-line
 commit history.
+
+---
+
+# Session 2026-08-01 / 2026-08-02
+
+## Objective
+
+Thiết kế và triển khai đầy đủ module `Parser`: chuyển `ExtractionResult`
+(WordToken thô từ Extractor) thành `InvoiceInfo`, dùng kỹ thuật Template
+Matching (Key Matching + Bounding Box Windowing + Value Matching), với
+Template Definition lưu ngoài dưới dạng JSON để dễ cập nhật và chuẩn bị
+sẵn sàng cho một engine LayoutLMv3 ở v2.0.
+
+## Completed
+
+### Domain Model
+
+- `core/enums.py`: thêm `ValueType`, `SpatialDirection`.
+- `core/models.py`: `InvoiceInfo` chuyển hầu hết field sang `Optional`
+  (trừ `source_file`); thêm `SpatialRelation`, `FieldDefinition` (tự
+  validate `field_name` khớp `InvoiceInfo`), `TemplateDefinition`,
+  `TemplateSelection` (matched_keys giữ kèm `page_index`).
+- `core/constants.py`: thêm `Logging`, `TemplateMatching` (5 hằng số
+  ngưỡng, đều là placeholder cần tinh chỉnh sau).
+
+### Modules mới
+
+- `utils/logger.py` — logger dùng chung, console handler, cấu hình 1
+  lần (không nhân đôi handler khi gọi `get_logger()` nhiều lần).
+- `core/value_converter.py` — convert TEXT/DECIMAL/DATE, stateless,
+  không raise.
+- `core/template_loader.py` — đọc/validate JSON template, fail-soft
+  per file (log warning, bỏ qua, không dừng batch).
+- `core/template_matcher.py` — lõi thuật toán: Line/Phrase Clustering,
+  fuzzy Key Matching (rapidfuzz + chuẩn hoá dấu tiếng Việt), Template
+  Scoring/Decision (tái dùng pattern Evidence→Score→Decision của
+  `PDFDetector`), Windowing, Value Matching (tie-break theo khoảng
+  cách gần nhất).
+- `core/parser.py` — orchestrator mỏng, `parse()` trả
+  `InvoiceInfo | None`.
+- `config.py` — thêm `TEMPLATES_DIR`.
+- `resources/templates/sample_invoice_v1.json` — template mẫu để test,
+  cố ý còn 2 lỗi đã biết (key_tokens ngắn, value_pattern lỏng), chưa
+  sửa — chờ dữ liệu PDF thật.
+
+### Extractor
+
+- `core/extractor.py`: mở rộng trách nhiệm sang chuẩn hoá whitespace
+  của text token (`_normalize_text()`), ngoài hình học đã có từ trước.
+
+### Worker Integration
+
+- `ui/worker.py`: `Worker.__init__` khởi tạo `TemplateLoader` +
+  `TemplateMatcher` + `Parser`; `_process_pdf()` gọi `Parser.parse()`
+  trong try/except riêng, gán `result.invoice`.
+
+## Architecture Decisions
+
+Xem ARCHITECTURE_DECISIONS.md ADR-029 đến ADR-036, tóm tắt:
+
+- Parser = orchestrator mỏng + TemplateMatcher engine tách biệt (chuẩn
+  bị cho LayoutLMv3 v2.0).
+- Template Selection dùng chấm điểm theo trọng số Evidence (tái dùng
+  pattern của PDFDetector), có tie margin, tính trên toàn văn bản.
+- Template Definition lưu JSON ngoài, validate + convert sang frozen
+  dataclass; file lỗi bị bỏ qua, không dừng batch.
+- InvoiceInfo hầu hết field Optional; convert/tìm value thất bại ->
+  field = None, không raise, không phản ánh vào PDFResult.status.
+- Parser.parse() trả None khi không xác định được template (đối xứng
+  ADR-027) -> cũng KHÔNG phản ánh vào PDFResult.status/.note (quyết
+  định của người dùng: nguyên nhân "không khớp template" không thể
+  khẳng định chắc chắn là lỗi hệ thống hay dữ liệu/nhập sai file — xử
+  lý qua Report, dựa vào tần suất lặp lại để phân biệt).
+- TemplateSelection.matched_keys giữ kèm page_index (không sửa
+  WordToken - phạm vi ảnh hưởng rộng hơn).
+- Chuẩn hoá dấu tiếng Việt bắt buộc trước fuzzy match (phát hiện thực
+  nghiệm: ratio ~70 nếu không chuẩn hoá, dưới mọi ngưỡng hợp lý).
+- Extractor mở rộng trách nhiệm sang chuẩn hoá text whitespace.
+
+## Issues Encountered
+
+### Diacritics tiếng Việt làm sập fuzzy matching
+
+Phát hiện qua kiểm thử thực nghiệm (không phải suy đoán trước): so
+sánh "Mã số thuế" (có dấu) với "Ma so thue" (không dấu) qua
+`rapidfuzz.fuzz.ratio()` chỉ cho ratio ~70, dưới mọi ngưỡng
+`fuzzy_threshold` hợp lý (85-90). Nghiêm trọng hơn: cùng vấn đề xảy ra
+khi OCR làm rớt dấu trên bản scan chất lượng thấp — một tình huống
+thực tế, không phải edge case hiếm.
+
+Giải quyết: thêm `_strip_diacritics()` (NFKD decompose + xử lý riêng
+`Đ/đ`, vì ký tự này không tự decompose qua NFKD) áp dụng cho cả 2 phía
+trước khi so khớp.
+
+### Key Token ngắn gây match nhầm dòng khác trong tài liệu
+
+Phát hiện qua kiểm thử: template mẫu có `key_tokens: ["so hoa don",
+"so"]` cho field `invoice_number`; biến thể `"so"` (1 từ) khớp 100%
+với từ "số" đứng độc lập trong cụm "Mã số thuế" ở dòng khác, khiến
+Windowing dựng sai vị trí, kết quả trích xuất sai field. Xác nhận đây
+KHÔNG phải lỗi thuật toán (rapidfuzz trả kết quả đúng bản chất) mà là
+vấn đề thiết kế template — ghi thành quy tắc vận hành (xem CHANGELOG
+Known Limitations), chưa có tài liệu chính thức.
+
+### value_pattern lỏng khiến dấu câu bị chọn nhầm làm Value
+
+Phát hiện qua kiểm thử: `value_pattern: ".+"` cho phép dấu `":"` đứng
+ngay sau Key (thường gần Key hơn giá trị thật) được chọn do tie-break
+theo khoảng cách. Sửa bằng cách yêu cầu pattern có ít nhất 1 ký tự
+không phải khoảng trắng/dấu câu cơ bản — ghi thành quy tắc vận hành.
+
+### PySide6/PyMuPDF không có sẵn trong môi trường kiểm thử
+
+Phải cài đặt (`pip install PySide6 PyMuPDF rapidfuzz --break-system-
+packages`) trong workspace kiểm thử; các dependency này (đặc biệt
+`rapidfuzz`, mới thêm) cần được người dùng tự bổ sung vào dependency
+file thật của project (project hiện chưa có requirements.txt/
+pyproject.toml — chưa xác nhận).
+
+## Validation
+
+Verified bằng kiểm thử trực tiếp (bash + Python), không phải review
+tĩnh:
+
+- `utils/logger.py`: format đúng, level lọc đúng, không nhân đôi
+  handler khi gọi nhiều lần từ nhiều module.
+- `core/enums.py`: enum mới hoạt động đúng, enum cũ không bị ảnh hưởng
+  (regression).
+- `core/models.py`: `InvoiceInfo` Optional đúng, `FieldDefinition` tự
+  validate `field_name` (raise `ValueError` rõ ràng khi sai), toàn bộ
+  dataclass frozen/immutable đúng, regression cho dataclass cũ pass.
+- `core/value_converter.py`: TEXT/DECIMAL (default VN + custom format)/
+  DATE đều đúng; stress test với dữ liệu nhiễu OCR xác nhận không bao
+  giờ raise Exception.
+- `core/template_loader.py`: load đúng file hợp lệ, bỏ qua đúng 5 loại
+  lỗi khác nhau (cú pháp JSON, thiếu key, key_tokens rỗng, sai enum,
+  field_name sai), xử lý đúng thư mục không tồn tại/rỗng.
+- `core/template_matcher.py`: verify end-to-end bằng dữ liệu WordToken
+  mô phỏng 1 trang hóa đơn thật (có dấu tiếng Việt đầy đủ) — Key
+  Matching, Score/Decision, Windowing (cả hướng RIGHT và BELOW), Value
+  Matching đều cho kết quả đúng sau khi sửa 2 lỗi thiết kế template
+  phát hiện được.
+- `core/parser.py`: happy path đúng kiểu dữ liệu đích; trả None đúng
+  khi không xác định được template; 1 field lỗi không ảnh hưởng field
+  khác, không raise.
+- `ui/worker.py`: tích hợp Parser đầy đủ — happy path, trường hợp
+  Parser trả None (status/note không đổi, đúng quyết định), và trường
+  hợp Parser raise Exception thật (status FAILED, nhất quán các stage
+  khác) đều được verify qua monkeypatch 3 stage đầu (Reader/Detector/
+  Extractor) và dùng Parser thật.
+- `core/extractor.py` (text normalize): verify riêng + regression toàn
+  bộ pipeline Worker+Parser sau khi thêm thay đổi — không phá vỡ gì.
+
+## Next Session
+
+Priority:
+
+1. Viết tài liệu "Template Authoring Guide" (quy tắc key_tokens/
+   value_pattern an toàn, đúc kết từ Issues Encountered phiên này).
+2. Sửa lại `resources/templates/sample_invoice_v1.json` và bổ sung
+   template thật khi có dữ liệu PDF hóa đơn thật; tinh chỉnh
+   `TemplateMatching.*` trong `core/constants.py`.
+3. Thiết kế ghép cụm nhiều từ cho Value Matching (hiện chỉ 1 WordToken
+   đơn lẻ — company_name/address bị cắt cụt).
+4. `excel_writer.py` + Report export (bao gồm hiển thị field
+   `InvoiceInfo = None` và trường hợp Parser không xác định được
+   template — theo ADR-033).
+5. Bổ sung `rapidfuzz` (và các dependency khác) vào dependency file
+   chính thức của project.
+6. Thảo luận riêng: tái cấu trúc thư mục source theo module chức năng
+   (core/parsing/template/, core/parsing/layoutlm/...) sau khi v1 hoàn
+   thiện — đã đề xuất sơ bộ, chưa quyết định (xem PROJECT_CONTEXT.md
+   §18).
+7. Resolve `processor.py` role vs `Worker.process()` (vẫn mở từ các
+   session trước).
+
+## Notes
+
+Toàn bộ module Parser (8 bước: logger → enums → models → value_converter
+→ template_loader → template_matcher → parser → worker integration +
+extractor text normalize) được implement và verify tuần tự theo
+DEVELOPMENT_WORKFLOW.md (1 file/1 bước, compile+run+verify trước khi
+sang bước kế). 3 lỗi thiết kế thực chất (diacritics, key_tokens ngắn,
+value_pattern lỏng) được phát hiện qua kiểm thử thực nghiệm với dữ liệu
+mô phỏng, không phải qua review tĩnh — xác nhận giá trị của việc chạy
+thử thực tế thay vì chỉ đọc code.

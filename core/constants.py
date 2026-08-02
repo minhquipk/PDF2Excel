@@ -42,6 +42,13 @@ class Table:
     }
 
 
+class Logging:
+    """Cấu hình logging dùng chung cho toàn bộ ứng dụng."""
+    LEVEL = "INFO"
+    FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
 class FileDialog:
     """Bộ lọc File Dialog."""
     PDF_FILTER = "PDF Files (*.pdf)"
@@ -113,3 +120,35 @@ class UIText:
     INPUT_FOLDER_REQUIRED = "Please select an input folder."
     OUTPUT_EXCEL_REQUIRED = "Please select an output Excel file."
     REPORT_PENDING = "Report feature will be implemented later."
+
+
+class TemplateMatching:
+    """
+    Cấu hình cho TemplateMatcher (Parser).
+
+    Toàn bộ giá trị dưới đây là ước lượng ban đầu (placeholder), CẦN TINH
+    CHỈNH LẠI sau khi có dữ liệu PDF hóa đơn thật. Xem SESSION_SUMMARIES.md
+    - ghi chú "cần thảo luận thêm sau khi Parser chạy thử nghiệm".
+    """
+    # Dung sai gom WordToken vào cùng 1 "dòng" theo trục y_center (tỉ lệ
+    # normalized_bbox [0.0, 1.0]). 2 token có |y_center_a - y_center_b|
+    # <= LINE_Y_TOLERANCE được coi là cùng dòng.
+    LINE_Y_TOLERANCE = 0.01
+
+    # Khoảng cách ngang tối đa (tỉ lệ [0.0, 1.0]) giữa 2 token liên tiếp
+    # trong cùng dòng để được gộp vào cùng 1 cụm từ (candidate phrase) khi
+    # Key Matching. Gap lớn hơn ngưỡng này coi như 2 "trường" khác nhau.
+    WORD_GAP_TOLERANCE = 0.02
+
+    # Số từ tối đa trong 1 cụm Key Token sinh ra bằng sliding window.
+    # VD: "tổng cộng tiền thanh toán" = 4 từ -> cần MAX_KEY_WORDS >= 4.
+    MAX_KEY_WORDS = 4
+
+    # Độ chênh lệch điểm tối thiểu giữa template hạng 1 và hạng 2 để coi là
+    # "chọn được rõ ràng". Nếu chênh lệch nhỏ hơn ngưỡng này -> không xác
+    # định được template (đối xứng PDFDetector._DECISION_TIE_MARGIN).
+    TEMPLATE_TIE_MARGIN = 0.10
+
+    # Điểm match_score tối thiểu để 1 template được coi là ứng viên hợp lệ,
+    # kể cả khi nó dẫn đầu và không bị tie với template thứ 2.
+    TEMPLATE_MIN_SCORE = 0.5

@@ -104,6 +104,13 @@ PDF2Excel/
         pdf_detector.py
         pdf_reader.py
         processor.py
+        template_loader.py
+        template_matcher.py
+        value_converter.py
+        
+    resources/
+        templates/
+            sample_invoice_v1.json
 ```
 
 ---
@@ -134,6 +141,15 @@ Completed:
   Extractor (conditional on a valid mode). Excel writing and invoice
   parsing remain pending.
 - processing_table_model.py
+- value_converter.py — stateless TEXT/DECIMAL/DATE conversion, không
+  raise (trả None khi thất bại).
+- template_loader.py — đọc/validate JSON Template Definition, fail-soft
+  per file.
+- template_matcher.py — Key Matching (Line/Phrase Clustering + fuzzy,
+  chuẩn hoá dấu tiếng Việt) → Score/Decision → Windowing → Value
+  Matching.
+- parser.py — orchestrator mỏng, trả `InvoiceInfo | None`.
+- utils/logger.py — logger dùng chung, console handler.
 
 Current UI features:
 
@@ -148,12 +164,11 @@ Current UI features:
 
 Still pending (not yet implemented):
 
-- parser.py (regex-based invoice parsing, consuming
-  `ExtractionResult.words_by_page`)
 - excel_writer.py
-- Report export
+- Report export (bao gồm cả việc hiển thị field InvoiceInfo = None và
+  trường hợp Parser không xác định được template — xem ADR-033)
 - Real OCR backend (ocr_engine.py currently Mock only)
-- config.py / main.py (entry point not yet assembled)
+- Tài liệu hướng dẫn viết Template JSON (Template Authoring Guide)
 
 Note: `core/processor.py` currently contains only placeholder method
 calls (`start/stop/pause/resume`) with no implementation. The actual
@@ -349,12 +364,12 @@ Processing Table
 
 Processing Table columns:
 
-| Column | Description |
-|----------|-------------|
-| PDF | File name |
-| TYPE | Digital / OCR |
+| Column | Description         |
+|--------|---------------------|
+| PDF    | File name           |
+| TYPE   | Digital / OCR       |
 | STATUS | OK / ERROR / OCR... |
-| NOTE | Detailed message |
+| NOTE   | Detailed message    |
 
 ---
 
@@ -431,6 +446,11 @@ Regex
 Data
 
 - dataclasses
+
+Fuzzy Matching
+
+- rapidfuzz — dùng bởi template_matcher.py cho Key Matching (cần thêm
+  vào requirements.txt/dependency file của project — hiện chưa có).
 
 ---
 
@@ -522,6 +542,16 @@ Current:
 - No automated test suite exists; `Extractor._rotate_bbox()` in
   particular is a good candidate for dedicated unit tests before
   further logic is built on top of it.
+- Value Matching (template_matcher.py) chỉ lấy 1 WordToken đơn lẻ; field
+  nhiều từ (company_name, address) bị cắt cụt. Cần thiết kế ghép cụm
+  Value trước khi Value Matching — deferred, chưa có giải pháp.
+- Chưa có tài liệu "Template Authoring Guide" (quy tắc viết key_tokens/
+  value_pattern an toàn) — cần thiết trước khi ai đó ngoài phiên thảo
+  luận này viết Template JSON thật.
+- TemplateMatching.* (core/constants.py) là giá trị ước lượng ban đầu,
+  cần tinh chỉnh khi có PDF hóa đơn thật.
+- resources/templates/sample_invoice_v1.json cố ý giữ 2 lỗi đã biết
+  (key_tokens ngắn, value_pattern lỏng) — chưa sửa, chờ dữ liệu thật.
 
 Resolved (previously listed here, now implemented — see Section 4):
 
@@ -653,3 +683,7 @@ DO NOT change unless absolutely necessary.
 - Plugin parser
 - OCR optimization
 - Batch report
+- Tái cấu trúc thư mục source theo module chức năng khi hoàn thiện v1
+  (VD core/parsing/template/, core/parsing/layoutlm/) — đã thảo luận sơ
+  bộ, CHƯA quyết định, cần 1 phiên thảo luận riêng trước khi thực hiện
+  (tránh đổi kiến trúc giữa chừng, theo Rule 1/11).

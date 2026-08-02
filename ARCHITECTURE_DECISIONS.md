@@ -486,3 +486,196 @@ This is a real, confirmed coordinate-frame mismatch for rotated pages
 
 Resolution: `Extractor._rotate_bbox()` implements the four
 PyMuPDF-guaranteed
+
+------------------------------------------------------------------------
+
+## ADR-029 --- Parser as Orchestrator + TemplateMatcher Engine Separation
+
+**Status:** Accepted
+
+`Parser` follows the same separation established by `Extractor` (ADR-024):
+it never contains Key Matching, Windowing, or Value Matching logic itself.
+All template-matching logic lives in `TemplateMatcher`; `Parser` only calls
+`TemplateMatcher.select_template()` + `.extract_fields()`, then converts
+raw strings into typed `InvoiceInfo` fields via `ValueConverter`.
+
+Reason: prepares for a v2.0 LayoutLMv3-based engine to be dropped in as an
+alternative to `TemplateMatcher` behind the same interface, without
+changing `Parser` or `Worker`.
+
+Confirmed in implementation: `core/parser.py`, `core/template_matcher.py`.
+
+------------------------------------------------------------------------
+
+## ADR-030 --- Template Selection via Evidence-Weighted Scoring
+
+**Status:** Accepted
+
+`TemplateMatcher.select_template()` reuses the same Evidence → Score →
+Decision pattern already established by `PDFDetector` (ADR-020/021):
+
+- Each `TemplateDefinition` is scored independently: 
+  `score = Σ(identification_weight of fields whose key matched) / Σ(identification_weight of all fields)`.
+- A tie margin (`TemplateMatching.TEMPLATE_TIE_MARGIN`) prevents selecting
+  an ambiguous winner when two templates score too closely — mirrors
+  `PDFDetector._DECISION_TIE_MARGIN`.
+- A minimum score threshold (`TemplateMatching.TEMPLATE_MIN_SCORE`) rejects
+  weak matches outright.
+- Score is computed over the **entire** document text (all pages), not a
+  restricted region, to avoid baking in layout assumptions that would
+  break under future document types (deliberate choice over performance).
+
+`FieldDefinition.identification_weight` lets template authors mark which
+fields are supplier-identifying (e.g. tax code, company name) versus
+generic (e.g. invoice date) — generic fields do not influence template
+selection.
+
+Confirmed in implementation: `core/template_matcher.py::TemplateMatcher._score_template()`.
+
+------------------------------------------------------------------------
+
+## ADR-031 --- Template Definition Stored as External JSON
+
+**Status:** Accepted
+
+Template Definitions live as JSON files under `resources/templates/`,
+loaded via `TemplateLoader` into frozen dataclasses
+(`TemplateDefinition`/`FieldDefinition`/`SpatialRelation` in
+`core/models.py`). This lets template authors add/update invoice formats
+without touching Python logic (satisfies the "templates must be easy to
+update without affecting logic" requirement).
+
+- A JSON file that fails to parse or validate is skipped with a logged
+  warning; loading continues for all other files (fail-soft per file).
+- The `resources/templates/` directory itself missing is also handled
+  gracefully (logged warning, empty template set) rather than crashing
+  the application — consistent with the target audience (office users,
+  PROJECT_CONTEXT.md §1).
+- `FieldDefinition.__post_init__` validates that `field_name` matches an
+  actual field of `InvoiceInfo` (via `dataclasses.fields()`), failing
+  fast on template authoring typos rather than failing silently at
+  `InvoiceInfo(**values)` construction time in `Parser`.
+- `value_pattern` is stored as a plain string in `FieldDefinition`; regex
+  compilation happens in `TemplateMatcher` (with a cache), not in
+  `core/models.py`, preserving `models.py`'s existing "no Regex" rule.
+
+Confirmed in implementation: `core/template_loader.py`, `core/models.py`.
+
+------------------------------------------------------------------------
+
+## ADR-032 --- InvoiceInfo Fields Are Optional; Convert Failures Become None
+
+**Status:** Accepted
+
+All `InvoiceInfo` fields except `source_file` are `Optional`, defaulting
+to `None`. When `TemplateMatcher` cannot find a value for a field, or
+`ValueConverter` fails to convert a matched raw string into its target
+type (`Decimal`/`date`), the corresponding `InvoiceInfo` field is simply
+`None` — never an exception, never a placeholder/sentinel value.
+
+`ValueConverter` is deliberately stateless and never raises: any
+conversion failure (malformed number, invalid date, OCR noise) returns
+`None`. This isolates a single bad field from failing the entire PDF.
+
+Confirmed in implementation: `core/models.py::InvoiceInfo`,
+`core/value_converter.py`.
+
+------------------------------------------------------------------------
+
+## ADR-033 --- Invoice-Level Gaps Are a Report Concern, Not a Worker Status Concern
+
+**Status:** Accepted
+
+Two distinct situations were deliberately kept **out** of
+`PDFResult.status`/`.note`:
+
+1. **A field inside `InvoiceInfo` is `None`** (Value Matching or convert
+   failure for one field) — per ADR-032.
+2. **`Parser.parse()` returns `None` entirely** (no template scored above
+   `TEMPLATE_MIN_SCORE`, or the winner tied with a runner-up) —
+   symmetric to how `AnalysisMode.UNKNOWN` is "absence of a decision"
+   (ADR-027), not an error.
+
+Rationale for (2): the cause of "no template matched" is inherently
+ambiguous from the pipeline's point of view — it could mean a missing
+template, an incorrect/stale template, a low-quality PDF, or even a
+misfiled document. The system cannot distinguish these causes reliably,
+so it must not guess by asserting `WARNING`. Instead: `PDFResult.status`
+and `.note` remain driven solely by `PDFDetector`'s decision, exactly as
+before Parser existed. Both situations surface exclusively through the
+Report feature (`ui/main_window.py`'s Report button — UI exists,
+logic pending, see PROJECT_CONTEXT.md §14/§15), where the operator can
+observe **frequency**: low/isolated occurrences point to a bad file or
+wrong input; frequent/repeating occurrences on the same shape point to a
+template that needs updating.
+
+Confirmed in implementation: `ui/worker.py::Worker._process_pdf()`
+(Parser integration block).
+
+------------------------------------------------------------------------
+
+## ADR-034 --- TemplateSelection Carries page_index Alongside Matched Key
+
+**Status:** Accepted
+
+`TemplateSelection.matched_keys` is typed
+`Mapping[str, tuple[int, WordToken]]`, not `Mapping[str, WordToken]`.
+
+Reason: `WordToken.normalized_bbox` is only meaningful within a single
+page's coordinate space (`ExtractionResult.words_by_page` is keyed by
+page). Without `page_index`, `TemplateMatcher.extract_fields()` would not
+know which page's `WordToken` collection to scan when building a
+Windowing search area from a previously-matched key, and could
+incorrectly compare bounding boxes across different pages.
+
+Rejected alternative: adding `page_index` to `WordToken` itself. Rejected
+because `WordToken` is an already-frozen, shared domain model consumed by
+`Extractor` (ADR-024/025) — changing it would ripple into
+`ExtractionResult`/`Extractor`, a much wider blast radius than scoping the
+fix to `TemplateSelection`, which is new and Parser-only.
+
+Confirmed in implementation: `core/models.py::TemplateSelection`.
+
+------------------------------------------------------------------------
+
+## ADR-035 --- Vietnamese Diacritics Normalization Required for Fuzzy Key Matching
+
+**Status:** Accepted
+
+`TemplateMatcher` strips Vietnamese diacritics (`_strip_diacritics()`,
+Unicode NFKD decomposition + explicit `Đ/đ` handling, since `Đ/đ` do not
+decompose under NFKD) from both `FieldDefinition.key_tokens` and observed
+text before calling `rapidfuzz.fuzz.ratio()`.
+
+Verified empirically during implementation: comparing accented text
+("Mã số thuế") against its unaccented form ("Ma so thue") without this
+normalization yields a similarity ratio of ~70, below any reasonable
+`fuzzy_threshold` (85-90) — meaning key matching would silently fail
+whenever a template's `key_tokens` and the PDF's actual text differ in
+diacritics, including the realistic case of OCR dropping diacritics on
+low-quality scans.
+
+Confirmed in implementation: `core/template_matcher.py::_strip_diacritics()`.
+
+------------------------------------------------------------------------
+
+## ADR-036 --- Extractor Also Normalizes Text Whitespace (Not Just Geometry)
+
+**Status:** Accepted
+
+Extends `Extractor`'s existing normalization responsibility (previously
+geometry-only, per ADR-024/025/028) to also cover text whitespace:
+`_extract_digital_page()`/`_extract_ocr_page()` now strip leading/
+trailing whitespace and collapse internal whitespace in each token's text
+before constructing `WordToken`. A token that becomes empty after
+normalization is dropped entirely (no empty-text `WordToken` is ever
+produced).
+
+Reason for placing this in `Extractor` rather than `Parser`: whitespace
+normalization is a format concern independent of any downstream domain
+model (Parser, or a future LayoutLMv3 engine, would otherwise have to
+duplicate it) — consistent with `Extractor` already being the single
+place where raw PyMuPDF/OCR output is normalized into clean `WordToken`s
+for any downstream consumer.
+
+Confirmed in implementation: `core/extractor.py::Extractor._normalize_text()`.

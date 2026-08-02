@@ -94,6 +94,10 @@ class Extractor:
         for raw_word in page.words:
             x0, y0, x1, y1, text, *_ = raw_word
 
+            normalized_text = self._normalize_text(text)
+            if not normalized_text:
+                continue
+
             bbox = self._rotate_bbox(
                 (x0, y0, x1, y1),
                 rotation=rotation,
@@ -104,7 +108,7 @@ class Extractor:
 
             tokens.append(
                 WordToken(
-                    text=text,
+                    text=normalized_text,
                     normalized_bbox=normalized_bbox,
                     confidence=None,
                     source="digital",
@@ -128,6 +132,10 @@ class Extractor:
 
         tokens: list[WordToken] = []
         for x0, y0, x1, y1, text, confidence in raw_words:
+            normalized_text = self._normalize_text(text)
+            if not normalized_text:
+                continue
+
             normalized_bbox = self._normalize_bbox(
                 (x0, y0, x1, y1),
                 page.page_image.width,
@@ -135,7 +143,7 @@ class Extractor:
             )
             tokens.append(
                 WordToken(
-                    text=text,
+                    text=normalized_text,
                     normalized_bbox=normalized_bbox,
                     confidence=confidence,
                     source="ocr",
@@ -143,6 +151,21 @@ class Extractor:
             )
 
         return tuple(tokens)
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """
+        Chuẩn hoá whitespace của một text token.
+
+        Loại bỏ khoảng trắng thừa đầu/cuối và thu gọn khoảng trắng liên tiếp
+        bên trong thành 1 khoảng trắng. Áp dụng cho cả hai nguồn (Digital/
+        OCR) vì đây là quy tắc định dạng chung, không phụ thuộc domain model
+        nào - phù hợp đặt tại Extractor thay vì lặp lại ở Parser (xem ADR-029).
+
+        Token trở thành rỗng sau khi chuẩn hoá (VD toàn khoảng trắng) sẽ bị
+        loại bỏ hoàn toàn, không tạo WordToken tương ứng.
+        """
+        return " ".join(text.split())
 
     @staticmethod
     def _rotate_bbox(

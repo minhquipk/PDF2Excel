@@ -88,3 +88,24 @@ class RuleCategory(str, Enum):
     LAYOUT = "Layout"
     CONSISTENCY = "Consistency"
     QUALITY = "Quality"
+
+
+class ValueType(str, Enum):
+    """
+    Kiểu dữ liệu đích mà Value Pattern của một FieldDefinition trích ra.
+    Dùng bởi ValueConverter để biết cách convert raw text sau khi regex match.
+    """
+    TEXT = "Text"
+    DECIMAL = "Decimal"
+    DATE = "Date"
+
+
+class SpatialDirection(str, Enum):
+    """
+    Hướng tìm Value tương đối so với vị trí Key Token đã match.
+    Dùng bởi SpatialRelation (TemplateMatcher Bước 2 - Windowing).
+    """
+    RIGHT = "Right"
+    LEFT = "Left"
+    BELOW = "Below"
+    ABOVE = "Above"

@@ -11,7 +11,6 @@ rather than Git commits.
 
 ### Next
 
--   Implement `parser.py` (regex-based invoice parsing)
 -   Implement `excel_writer.py`
 -   Implement Report export
 -   Replace `OCREngine` Mock with a real backend (e.g. Tesseract)
@@ -290,8 +289,6 @@ rather than Git commits.
 
 ------------------------------------------------------------------------
 
-------------------------------------------------------------------------
-
 ## 2026-07-31
 
 ### Domain Model — Extractor Support
@@ -458,5 +455,108 @@ rather than Git commits.
     `list[PDFPage]` to `tuple[PDFPage, ...]`, matching
     `PDFDocument.pages`'s declared (and enforced, via
     `__post_init__`) type.
+
+------------------------------------------------------------------------
+
+## 2026-08-01 / 2026-08-02
+
+### Parser — Full Implementation (Template Matching Engine)
+
+#### Added
+
+-   `core/enums.py`: added `ValueType`, `SpatialDirection`.
+-   `core/models.py`:
+    -   `InvoiceInfo` fields (except `source_file`) changed to `Optional`,
+        defaulting to `None` — see ADR-032.
+    -   Added `SpatialRelation`, `FieldDefinition`, `TemplateDefinition`,
+        `TemplateSelection` (frozen dataclasses; `FieldDefinition`
+        validates `field_name` against `InvoiceInfo`'s actual fields at
+        construction time).
+-   `core/constants.py`: added `Logging` (logging format/level) and
+    `TemplateMatching` (`LINE_Y_TOLERANCE`, `WORD_GAP_TOLERANCE`,
+    `MAX_KEY_WORDS`, `TEMPLATE_TIE_MARGIN`, `TEMPLATE_MIN_SCORE`) — all
+    placeholder values, flagged for tuning once real invoice PDFs are
+    available.
+-   `utils/logger.py`: minimal shared logger (`get_logger()`), console
+    handler, configured once (root logger), used by `TemplateLoader`.
+-   `core/value_converter.py`: `ValueConverter` — stateless TEXT/DECIMAL/
+    DATE conversion, never raises (returns `None` on failure).
+-   `core/template_loader.py`: `TemplateLoader` — reads all `*.json` under
+    a directory, validates, builds `TemplateDefinition`; invalid files are
+    skipped with a logged warning (fail-soft per file, not per batch).
+-   `core/template_matcher.py`: `TemplateMatcher` — full Key Matching
+    (Line/Phrase Clustering + diacritics-normalized rapidfuzz matching) →
+    Template Scoring/Decision (Evidence-weighted, tie margin) → Windowing
+    (directional search box from `SpatialRelation`) → Value Matching
+    (regex + nearest-to-key tie-break).
+-   `core/parser.py`: `Parser` — thin orchestrator; `parse()` returns
+    `InvoiceInfo | None` (`None` when no template is confidently selected,
+    ADR-033).
+-   `config.py`: added `TEMPLATES_DIR`.
+-   `resources/templates/`: new directory for Template Definition JSON
+    files (sample template added for local testing; production templates
+    still pending real invoice samples).
+
+#### Changed
+
+-   `core/extractor.py`: `_extract_digital_page()`/`_extract_ocr_page()`
+    now also normalize token text whitespace (strip + collapse internal
+    whitespace); empty-after-normalize tokens are dropped. See ADR-036.
+-   `ui/worker.py`: `Worker.__init__` now constructs `TemplateLoader` +
+    `TemplateMatcher` + `Parser`. `Worker._process_pdf()` calls
+    `Parser.parse()` (own try/except block, consistent with
+    Reader/Detector/Extractor) and assigns `result.invoice`. A `Parser`
+    exception -> `ProcessStatus.FAILED` (same as other stages); `Parser`
+    returning `None` -> `PDFResult.status`/`.note` untouched (ADR-033).
+
+#### Decisions
+
+-   Template Selection reuses `PDFDetector`'s Evidence → Score → Decision
+    pattern (ADR-030), scored over the full document (all pages), not a
+    restricted region.
+-   `re.compile()` for `value_pattern` is cached inside `TemplateMatcher`,
+    not stored on `FieldDefinition` — keeps `core/models.py`'s existing
+    "no Regex" rule intact (ADR-031).
+-   Vietnamese diacritics are stripped before fuzzy key matching
+    (ADR-035) — without this, key matching silently fails whenever
+    template `key_tokens` and actual PDF text differ in diacritics
+    (including the realistic OCR-drops-diacritics case).
+-   Neither a `None` field inside `InvoiceInfo` nor `Parser.parse()`
+    returning `None` entirely affects `PDFResult.status`/`.note` — both
+    are Report-only concerns (ADR-033), since the underlying cause
+    (missing/wrong template vs. bad PDF vs. wrong file) cannot be
+    reliably distinguished by the pipeline itself.
+
+#### Known Limitations (found during empirical testing, deferred)
+
+-   **Value Matching captures a single `WordToken` only.** Fields whose
+    real value spans multiple words (company name, address) are
+    truncated to the nearest single token to the matched key. Ghép cụm
+    nhiều từ cho Value (không chỉ Key) cần thiết kế thêm — deferred,
+    cần thảo luận riêng.
+-   **Template authoring guidance needed (no code fix — operational
+    rule):** single-word `key_tokens` (e.g. `"so"`) are prone to
+    false-positive matches against unrelated occurrences of the same word
+    elsewhere in the document (confirmed empirically: a generic
+    `key_tokens` entry matched the wrong table row). Template authors
+    should avoid single-word `key_tokens` unless the word is reliably
+    unique to the intended field's context.
+-   **`value_pattern` should exclude punctuation-only tokens (no code
+    fix — operational rule):** an overly permissive pattern (e.g. `.+`)
+    can match a stray punctuation token (e.g. `":"`) sitting closer to
+    the key than the real value, since Value Matching tie-breaks by
+    distance. Template authors should write patterns that require at
+    least one alphanumeric character (e.g. `.*[^\s:.,\-].*`).
+-   `LINE_Y_TOLERANCE`, `WORD_GAP_TOLERANCE`, `MAX_KEY_WORDS`,
+    `TEMPLATE_TIE_MARGIN`, `TEMPLATE_MIN_SCORE` (all in
+    `core/constants.py::TemplateMatching`) are placeholder values pending
+    tuning against real invoice PDFs.
+-   `resources/templates/sample_invoice_v1.json` intentionally still
+    contains the two issues above (short `key_tokens`, loose
+    `value_pattern`) — left as-is per explicit decision, to be corrected
+    once real invoice data is available rather than fixed speculatively.
+-   No formal "how to write a Template JSON" guidance document exists
+    yet — needed before non-developers or other contributors author
+    templates. See Next Tasks.
 
 ------------------------------------------------------------------------

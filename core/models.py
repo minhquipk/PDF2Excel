@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping as MappingABC
 from enum import Enum, auto
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import date, datetime, UTC
 from decimal import Decimal
 from types import MappingProxyType
@@ -24,6 +24,8 @@ from core.enums import (
     ProcessStage,
     ProcessStatus,
     RuleCategory,
+    SpatialDirection,
+    ValueType,
 )
 
 
@@ -40,36 +42,28 @@ def _freeze_value(value: Any) -> Any:
     return value
 
 
-# ======================================================================
-# Invoice Information
-# ======================================================================
-
 @dataclass(slots=True)
 class InvoiceInfo:
     """Thông tin trích xuất từ một hóa đơn PDF."""
     source_file: str
 
-    company_name: str
-    tax_code: str
-    address: str
+    company_name: Optional[str] = None
+    tax_code: Optional[str] = None
+    address: Optional[str] = None
 
-    buyer_name: str
-    buyer_tax_code: str
+    buyer_name: Optional[str] = None
+    buyer_tax_code: Optional[str] = None
 
-    payment_method: str
+    payment_method: Optional[str] = None
 
-    invoice_number: str
-    invoice_date: Optional[date]
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[date] = None
 
-    subtotal: Optional[Decimal]
-    vat_rate: Optional[Decimal]
-    vat_amount: Optional[Decimal]
-    total_amount: Optional[Decimal]
+    subtotal: Optional[Decimal] = None
+    vat_rate: Optional[Decimal] = None
+    vat_amount: Optional[Decimal] = None
+    total_amount: Optional[Decimal] = None
 
-
-# ======================================================================
-# PDF Processing Result
-# ======================================================================
 
 @dataclass(slots=True)
 class PDFResult:
@@ -87,10 +81,6 @@ class PDFResult:
     note: str = ""
 
 
-# ======================================================================
-# Processing Error
-# ======================================================================
-
 @dataclass(slots=True)
 class ProcessError:
     """Mô tả một lỗi phát sinh trong quá trình xử lý."""
@@ -99,10 +89,6 @@ class ProcessError:
     error_type: ErrorType
     message: str
 
-
-# ======================================================================
-# Whole Processing Result
-# ======================================================================
 
 @dataclass(slots=True)
 class SessionResult:
@@ -364,3 +350,66 @@ class ExtractionResult:
         object.__setattr__(self, "words_by_page", _freeze_value(self.words_by_page))
         object.__setattr__(self, "page_images", _freeze_value(self.page_images))
         object.__setattr__(self, "warnings", _freeze_value(self.warnings))
+
+
+@dataclass(slots=True, frozen=True)
+class SpatialRelation:
+    """Quan hệ không gian giữa Key Token và Value cần tìm."""
+    direction: SpatialDirection
+    max_distance: float    # Khoảng cách tối đa theo trục chính, tỉ lệ [0.0, 1.0]
+    axis_tolerance: float  # Dung sai theo trục vuông góc, tỉ lệ [0.0, 1.0]
+
+
+@dataclass(slots=True, frozen=True)
+class FieldDefinition:
+    """Định nghĩa cách trích một field của InvoiceInfo từ WordToken."""
+    field_name: str
+    value_type: ValueType
+    identification_weight: float
+    key_tokens: tuple[str, ...]
+    fuzzy_threshold: int
+    spatial_relation: SpatialRelation
+    value_pattern: str
+    date_format: str | None = None
+    decimal_format: Mapping[str, str] | None = None
+
+    def __post_init__(self) -> None:
+        valid_field_names = {f.name for f in fields(InvoiceInfo)}
+        if self.field_name not in valid_field_names:
+            raise ValueError(
+                f"field_name '{self.field_name}' không khớp với bất kỳ field nào "
+                f"của InvoiceInfo. Các field hợp lệ: {sorted(valid_field_names)}."
+            )
+
+        object.__setattr__(self, "key_tokens", _freeze_value(self.key_tokens))
+        if self.decimal_format is not None:
+            object.__setattr__(self, "decimal_format", _freeze_value(self.decimal_format))
+
+
+@dataclass(slots=True, frozen=True)
+class TemplateDefinition:
+    """Một mẫu hóa đơn: tập hợp FieldDefinition + metadata."""
+    template_id: str
+    version: int
+    description: str
+    fields: tuple[FieldDefinition, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "fields", _freeze_value(self.fields))
+
+
+@dataclass(slots=True, frozen=True)
+class TemplateSelection:
+    """
+    Kết quả select_template(): template thắng kèm vị trí Key Token đã match.
+    matched_keys: field_name -> (page_index, WordToken). Giữ cả page_index vì
+    normalized_bbox chỉ có ý nghĩa trong phạm vi một trang; extract_fields()
+    cần page_index để biết quét words_by_page[page_index] nào khi Windowing,
+    tránh phải quét lại toàn bộ WordToken lần thứ hai.
+    """
+    template: TemplateDefinition
+    score: float
+    matched_keys: Mapping[str, tuple[int, WordToken]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "matched_keys", _freeze_value(self.matched_keys))

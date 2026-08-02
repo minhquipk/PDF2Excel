@@ -2,11 +2,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 from PySide6.QtCore import QObject, Signal, Slot
+from config import TEMPLATES_DIR
 from core.enums import PDFType, ProcessStatus
-from core.models import AnalysisMode, DocumentAnalysis, PDFResult, ExtractionResult
+from core.models import (
+    AnalysisMode,
+    DocumentAnalysis,
+    ExtractionResult,
+    InvoiceInfo,
+    PDFResult,
+)
 from core.pdf_detector import PDFDetector
 from core.pdf_reader import PDFReader
 from core.extractor import Extractor
+from core.parser import Parser
+from core.template_loader import TemplateLoader
+from core.template_matcher import TemplateMatcher
 
 
 class Worker(QObject):
@@ -29,8 +39,11 @@ class Worker(QObject):
         self._pdf_reader = PDFReader()
         self._pdf_detector = PDFDetector()
         self._extractor = Extractor()
+
+        templates = TemplateLoader(TEMPLATES_DIR).load_all()
+        self._parser = Parser(TemplateMatcher(templates))
+
         self._ocr_reader = None
-        self._parser = None
         self._excel_writer = None
         self._report_writer = None
 
@@ -77,7 +90,7 @@ class Worker(QObject):
         self.finished.emit()
 
     def _process_pdf(self, pdf_file: Path) -> PDFResult:
-        """Read, classify, and extract one PDF without accessing the UI."""
+        """Read, classify, extract, and parse one PDF without accessing the UI."""
         relative_path = pdf_file
         if self._input_folder is not None:
             relative_path = pdf_file.relative_to(self._input_folder)
@@ -105,6 +118,22 @@ class Worker(QObject):
                 result.note = f"{type(error).__name__}: {error}"
                 return result
 
+        invoice: InvoiceInfo | None = None
+        if extraction is not None:
+            try:
+                invoice = self._parser.parse(extraction, str(pdf_file))
+            except Exception as error:
+                result.status = ProcessStatus.FAILED
+                result.note = f"{type(error).__name__}: {error}"
+                return result
+            # invoice is None ở đây nghĩa là "không xác định được template" -
+            # KHÔNG coi là lỗi (nguyên nhân có thể là thiếu template, template
+            # sai, PDF chất lượng kém, hoặc nhầm file - không thể khẳng định).
+            # Theo quyết định đã chốt (Phương án B): không đổi result.status,
+            # không ghi note. Người dùng tự nhận biết qua Report (cột invoice
+            # trống); nếu lặp lại nhiều lần trên cùng 1 mẫu -> báo admin cập
+            # nhật template.
+
         result.pdf_type = self._result_pdf_type(analysis.mode)
         result.status = (
             ProcessStatus.WARNING
@@ -112,6 +141,7 @@ class Worker(QObject):
             else ProcessStatus.SUCCESS
         )
         result.note = self._format_note(analysis, extraction)
+        result.invoice = invoice
         return result
 
     @staticmethod
