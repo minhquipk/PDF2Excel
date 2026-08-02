@@ -47,6 +47,7 @@ class Logging:
     LEVEL = "INFO"
     FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+    FILE_NAME = "app.log"
 
 
 class FileDialog:
@@ -120,6 +121,11 @@ class UIText:
     INPUT_FOLDER_REQUIRED = "Please select an input folder."
     OUTPUT_EXCEL_REQUIRED = "Please select an output Excel file."
     REPORT_PENDING = "Report feature will be implemented later."
+
+    # Report
+    REPORT_NOT_AVAILABLE = "No report has been generated yet. Please run Start first."
+    REPORT_OPEN_FAILED = "Could not open the report file."
+    ERROR_TITLE = "Error"
 
 
 class TemplateMatching:

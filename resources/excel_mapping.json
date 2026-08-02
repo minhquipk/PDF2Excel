@@ -1,0 +1,13 @@
+{
+  "table": "tblInvoices",
+  "columns": {
+    "Invoice No": "invoice_number",
+    "Date": "invoice_date",
+    "Supplier": "company_name",
+    "Tax Code": "tax_code",
+    "Amount": "subtotal",
+    "VAT Rate": "vat_rate",
+    "VAT Amount": "vat_amount",
+    "Total": "total_amount"
+  }
+}

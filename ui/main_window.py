@@ -2,7 +2,8 @@ from __future__ import annotations
 from core.constants import FileDialog, Table, UIText, Window
 from models.processing_table_model import ProcessingTableModel
 from ui.widgets import PathSelectorWidget, ProgressWidget, ProcessingTable
-from PySide6.QtCore import QThread
+from PySide6.QtCore import QThread, QUrl
+from PySide6.QtGui import QDesktopServices
 from ui.worker import Worker
 from PySide6.QtWidgets import (
     QApplication,
@@ -97,6 +98,7 @@ class MainWindow(QMainWindow):
         self._worker.cancelled.connect(self.on_worker_finished)
         self._worker.cancelled.connect(self._thread.quit)
         self._worker.file_processed.connect(self._table_model.append)
+        self._worker.error.connect(self.on_worker_error)
 
         self.btn_start.clicked.connect(self._start)
         self.btn_stop.clicked.connect(self._stop)
@@ -167,11 +169,23 @@ class MainWindow(QMainWindow):
         self._worker.cancel()
 
     def _report(self) -> None:
-        QMessageBox.information(
-            self,
-            UIText.REPORT_TITLE,
-            UIText.REPORT_PENDING,
-        )
+        report_path = self._worker.report_path
+
+        if report_path is None:
+            QMessageBox.information(
+                self,
+                UIText.REPORT_TITLE,
+                UIText.REPORT_NOT_AVAILABLE,
+            )
+            return
+
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(report_path)))
+        if not opened:
+            QMessageBox.warning(
+                self,
+                UIText.WARNING_TITLE,
+                UIText.REPORT_OPEN_FAILED,
+            )
 
     # ------------------------------------------------------------------
     # Worker callbacks (reserved)
@@ -192,6 +206,13 @@ class MainWindow(QMainWindow):
             total,
             elapsed,
             eta,
+        )
+
+    def on_worker_error(self, message: str) -> None:
+        QMessageBox.warning(
+            self,
+            UIText.ERROR_TITLE,
+            message,
         )
 
 

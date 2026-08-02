@@ -2,11 +2,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 from PySide6.QtCore import QObject, Signal, Slot
-from config import TEMPLATES_DIR
+from config import EXCEL_MAPPING_PATH, REPORTS_DIR, TEMPLATES_DIR
 from core.enums import PDFType, ProcessStatus
+from core.excel_mapper import Mapper, MappingError
+from core.excel_writer import (
+    ExcelTableNotFoundError,
+    ExcelWriter,
+    WorkbookNotFoundError,
+    WorkbookSaveError,
+)
 from core.models import (
     AnalysisMode,
     DocumentAnalysis,
+    ExcelWriteResult,
     ExtractionResult,
     InvoiceInfo,
     PDFResult,
@@ -17,6 +25,7 @@ from core.extractor import Extractor
 from core.parser import Parser
 from core.template_loader import TemplateLoader
 from core.template_matcher import TemplateMatcher
+from core.report_writer import ReportWriter
 
 
 class Worker(QObject):
@@ -44,8 +53,9 @@ class Worker(QObject):
         self._parser = Parser(TemplateMatcher(templates))
 
         self._ocr_reader = None
-        self._excel_writer = None
-        self._report_writer = None
+        self._excel_writer = ExcelWriter()
+        self._report_writer = ReportWriter(REPORTS_DIR)
+        self._report_path: Optional[Path] = None
 
     def configure(self, input_folder: Path, output_excel: Path) -> None:
         self._input_folder = Path(input_folder)
@@ -71,6 +81,10 @@ class Worker(QObject):
     @property
     def results(self) -> list[PDFResult]:
         return self._results
+
+    @property
+    def report_path(self) -> Optional[Path]:
+        return self._report_path
 
     def process(self) -> None:
         pdf_files = sorted(self._input_folder.rglob("*.pdf"))
@@ -174,4 +188,29 @@ class Worker(QObject):
         return note
 
     def _write_excel(self) -> None:
-        pass
+        """Ghi Excel (1 lần, cuối batch - ADR-008), sau đó luôn sinh report."""
+        invoices = [
+            result.invoice for result in self._results if result.invoice is not None
+        ]
+
+        try:
+            mapping = Mapper(EXCEL_MAPPING_PATH).load()
+            excel_result = self._excel_writer.write(
+                self._output_excel,
+                invoices,
+                mapping,
+            )
+        except (
+            MappingError,
+            WorkbookNotFoundError,
+            ExcelTableNotFoundError,
+            WorkbookSaveError,
+        ) as error:
+            self.error.emit(f"{type(error).__name__}: {error}")
+            excel_result = ExcelWriteResult(
+                total=len(invoices),
+                written=0,
+                errors=(f"{type(error).__name__}: {error}",),
+            )
+
+        self._report_path = self._report_writer.write(self._results, excel_result)

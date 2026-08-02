@@ -413,3 +413,37 @@ class TemplateSelection:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "matched_keys", _freeze_value(self.matched_keys))
+
+
+@dataclass(slots=True, frozen=True)
+class ExcelMapping:
+    """Ánh xạ cột Excel Table -> field của InvoiceInfo, đọc từ mapping.json."""
+    table: str
+    columns: Mapping[str, str]  # tên cột Excel -> field_name của InvoiceInfo
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "columns", _freeze_value(self.columns))
+
+
+@dataclass(slots=True, frozen=True)
+class InvoiceWarning:
+    """Một field InvoiceInfo bị None tại thời điểm ExcelWriter ghi dữ liệu."""
+    source_file: str
+    field_name: str
+
+
+@dataclass(slots=True, frozen=True)
+class ExcelWriteResult:
+    """
+    Kết quả có cấu trúc của một lượt ExcelWriter.write().
+    Dữ liệu thuần (ADR-006) - ExcelWriter không tự ghi report.txt hay log,
+    chỉ trả về đối tượng này để ReportWriter tiêu thụ.
+    """
+    total: int
+    written: int
+    warnings: tuple[InvoiceWarning, ...] = ()
+    errors: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "warnings", _freeze_value(self.warnings))
+        object.__setattr__(self, "errors", _freeze_value(self.errors))

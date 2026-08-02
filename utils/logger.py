@@ -8,31 +8,38 @@ Quy ước:
 """
 
 from __future__ import annotations
-
 import logging
-
+from config import LOG_DIR
 from core.constants import Logging as LoggingConfig
 
 _CONFIGURED = False
 
 
 def _configure_root() -> None:
-    """Cấu hình root logger một lần duy nhất (console handler)."""
+    """Cấu hình root logger một lần duy nhất (console + file handler)."""
     global _CONFIGURED
     if _CONFIGURED:
         return
 
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter(
-            fmt=LoggingConfig.FORMAT,
-            datefmt=LoggingConfig.DATE_FORMAT,
-        )
+    formatter = logging.Formatter(
+        fmt=LoggingConfig.FORMAT,
+        datefmt=LoggingConfig.DATE_FORMAT,
     )
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(
+        LOG_DIR / LoggingConfig.FILE_NAME,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
 
     root = logging.getLogger()
     root.setLevel(LoggingConfig.LEVEL)
-    root.addHandler(handler)
+    root.addHandler(console_handler)
+    root.addHandler(file_handler)
 
     _CONFIGURED = True
 
