@@ -11,13 +11,30 @@ rather than Git commits.
 
 ### Next
 
--   Implement `excel_writer.py`
--   Implement Report export
--   Replace `OCREngine` Mock with a real backend (e.g. Tesseract)
--   Resolve `processor.py` role (currently placeholder; orchestration
-    logic actually lives in `Worker.process()`)
--   Verify import paths in `core/models.py` (`from enums import ...`)
-    and `ui/widgets.py` (`from base_widget import ...`)
+-   **Run the application end-to-end against real sample PDF data**
+    (Direction 1, chosen over implementing OCR first — see
+    SESSION_SUMMARIES.md, Session 2026-08-03, and
+    PROJECT_CONTEXT.md §15 for the 5-step plan).
+-   Fix `resources/templates/sample_invoice_v1.json`'s two known
+    issues (short `key_tokens`, loose `value_pattern`) using findings
+    from the real-data run above, instead of guessing.
+-   Adjust `resources/excel_mapping.json` to match a real target
+    output Excel workbook.
+-   Manually verify `core/excel_writer.py::WorkbookSaveError` against
+    a real OS permission failure (could not be reproduced in the
+    root-privileged test container this session).
+-   Replace `OCREngine` Mock with a real backend (e.g. Tesseract) —
+    after the above, and only for Scanned/Hybrid-mode PDFs found in
+    real sample data.
+-   Resolve `processor.py` role (currently placeholder — not just
+    unimplemented but calls a `processor` variable that is never
+    defined; orchestration logic actually lives in `Worker.process()`)
+-   Resolve `main.py` (currently empty) vs `ui/main_window.py`
+    (currently holds the real `if __name__ == "__main__":` entry
+    point) discrepancy.
+-   Remove dead code: `core/constants.py::UIText.REPORT_PENDING`, no
+    longer referenced since `MainWindow._report()` was reimplemented
+    (ADR-041).
 -   Add Document Rules and Graphics Rules to pdf_detector Rule System
     (categories defined in TDS §7.2, not yet implemented)
 -   **v2.0 planning:** dual-source extraction for mixed pages (pages
@@ -560,3 +577,145 @@ rather than Git commits.
     templates. See Next Tasks.
 
 ------------------------------------------------------------------------
+
+## 2026-08-03
+
+### ExcelWriter / ReportWriter — Full Implementation
+
+#### Added
+
+-   `core/models.py`: added `ExcelMapping` (frozen dataclass: `table`,
+    `columns`), `InvoiceWarning` (`source_file`, `field_name`),
+    `ExcelWriteResult` (`total`, `written`, `warnings`, `errors`).
+-   `resources/excel_mapping.json`: sample Excel column mapping
+    (`tblInvoices` Table, 8 columns → `InvoiceInfo` fields).
+    `config.py`: added `EXCEL_MAPPING_PATH`.
+-   `core/excel_mapper.py`: `Mapper` — loads/validates
+    `excel_mapping.json` into `ExcelMapping`; raises `MappingError` on
+    any error (fail-fast, unlike `TemplateLoader`'s fail-soft — see
+    ADR-038). Validates every mapped `field_name` against
+    `dataclasses.fields(InvoiceInfo)`.
+-   `core/excel_writer.py`: `ExcelWriter.write(path, invoices, mapping)`
+    — writes `list[InvoiceInfo]` into an existing Excel Table
+    (openpyxl), expanding `table.ref` as rows are appended. Returns
+    `ExcelWriteResult` (pure data — ADR-006). Three exception classes:
+    `WorkbookNotFoundError`, `ExcelTableNotFoundError`,
+    `WorkbookSaveError`. Column-mapping mismatches against the actual
+    workbook header are soft-failed into `ExcelWriteResult.errors`,
+    not raised (ADR-039).
+-   `core/constants.py`: `Logging` extended (`FILE_NAME` was already
+    present; now actually used). `config.py`: added `LOG_DIR`,
+    `REPORTS_DIR`.
+-   `utils/logger.py`: `_configure_root()` now also attaches a
+    `FileHandler` (`logs/app.log`, UTF-8 — ADR-014) alongside the
+    existing console `StreamHandler`. Still configured exactly once
+    (`_CONFIGURED` guard unchanged).
+-   `core/report_writer.py`: `ReportWriter.write(results, excel_result)`
+    — two fully separate output channels (ADR-040): `list[PDFResult]`
+    logged via `utils/logger.py` (dev/admin, accumulates across runs);
+    `ExcelWriteResult` formatted into `reports/Report.txt`
+    (end-user, overwritten every run).
+-   `requirements.txt` (project root): pins `PySide6==6.11.1`,
+    `PyMuPDF==1.28.0`, `rapidfuzz==3.14.5`, `openpyxl==3.1.5` —
+    versions confirmed working via this session's test suite.
+    Resolves the missing-dependency-file issue open since Session
+    2026-08-01/02.
+
+#### Changed
+
+-   `ui/worker.py`: `Worker.__init__` now constructs real
+    `ExcelWriter()` and `ReportWriter(REPORTS_DIR)` instances (previously
+    `None` placeholders); added `self._report_path` and the
+    `report_path` property. `Worker._write_excel()` implemented
+    (previously `pass`): loads `ExcelMapping` lazily (not in
+    `__init__` — see ADR-038), calls `ExcelWriter.write()`, catches
+    `MappingError`/`WorkbookNotFoundError`/`ExcelTableNotFoundError`/
+    `WorkbookSaveError` and emits the (previously unused) `error`
+    Signal on failure, then always calls `ReportWriter.write()`
+    regardless of success/failure.
+-   `ui/main_window.py`: `_connect_signals()` now connects
+    `self._worker.error` to a new `on_worker_error()` slot (previously
+    unconnected since the signal's original declaration).
+    `_report()` reimplemented (ADR-041): no longer shows a "pending"
+    placeholder message — opens `Worker.report_path` via
+    `QDesktopServices.openUrl()` if available, otherwise shows
+    `REPORT_NOT_AVAILABLE`; shows `REPORT_OPEN_FAILED` if the OS
+    fails to open the file.
+-   `core/constants.py::UIText`: added `REPORT_NOT_AVAILABLE`,
+    `REPORT_OPEN_FAILED`, `ERROR_TITLE`. (`REPORT_PENDING` left in
+    place but is now dead code — see Unreleased/Next.)
+
+#### Decisions
+
+See `ARCHITECTURE_DECISIONS.md` ADR-037 through ADR-041 for full
+rationale. Summary:
+
+-   `ExcelWriter` and `ReportWriter` are two independent modules with
+    no dependency on each other — not a single combined
+    `ReportService` (an earlier design draft was rejected during
+    discussion; see Session 2026-08-03 in SESSION_SUMMARIES.md).
+-   `Mapper` fails fast (raises), unlike `TemplateLoader`'s fail-soft
+    — there is no "partially valid" concept for a single mapping file
+    that is the sole precondition for any Excel write.
+-   Column-level mismatches between mapping and the real workbook are
+    a soft failure (`ExcelWriteResult.errors`), not a hard raise —
+    other valid columns still get written.
+-   `report.txt` is generated automatically at the end of every
+    `process()` run (same timing as the Excel write, ADR-008) — the
+    Report button only opens the already-generated file, it never
+    triggers generation.
+-   `list[PDFResult]` (dev/admin) and `ExcelWriteResult` (end-user)
+    are logged/reported through two entirely separate channels with
+    no content mixing.
+
+#### Testing (this session)
+
+All 8 implementation steps were verified against the actual GitHub
+source (`https://github.com/minhquipk/PDF2Excel`, cloned and reviewed
+file-by-file before testing — confirmed byte-for-byte match with what
+had been agreed during design discussion) using automated
+scripted tests (not a full manual UI run):
+
+-   `core/models.py` new dataclasses: frozen/immutable behavior,
+    collection freezing — verified.
+-   `core/excel_mapper.py`: happy path + 5 distinct error cases (file
+    not found, bad JSON syntax, missing required key, invalid
+    `field_name`, empty `columns`) — all raise `MappingError`
+    correctly.
+-   `core/excel_writer.py`: happy path (2 invoices, `None`-field
+    warnings, Excel Table `ref` correctly expanded) — verified.
+    `WorkbookNotFoundError`, `ExcelTableNotFoundError`, and
+    column-mismatch soft-fail into `errors` — all verified.
+    `WorkbookSaveError` — **could not be verified**; the test
+    container runs as root, bypassing OS file-permission checks. The
+    exception-handling code path is logically sound (catches
+    `OSError`, a parent of `PermissionError`) but this specific
+    failure mode remains unverified against a real permission denial.
+    Flagged for manual verification (see Unreleased/Next).
+-   `utils/logger.py`: `FileHandler` creates `logs/app.log`
+    correctly, no duplicate handlers across repeated `get_logger()`
+    calls, UTF-8 Vietnamese text preserved — verified.
+-   `core/report_writer.py`: `report.txt` overwritten each run;
+    `logs/app.log` accumulates (append) each run; correct log level
+    (`WARNING` for `WARNING`/`FAILED` statuses, `INFO` otherwise) —
+    verified.
+-   `ui/worker.py::_write_excel()`: happy path and `MappingError`
+    error path (via a deliberately broken `EXCEL_MAPPING_PATH`) —
+    both verified, including correct `error` Signal emission and
+    `report.txt` still being generated on failure.
+-   `ui/main_window.py::_report()`: all 4 UI branches (no report yet,
+    report opens successfully, OS fails to open, `error` Signal →
+    warning popup) — verified via mocked `QMessageBox`/
+    `QDesktopServices` calls under `QT_QPA_PLATFORM=offscreen`.
+-   Full pipeline regression: a real minimal PDF was generated via
+    PyMuPDF and run through the complete
+    Reader→Detector→Extractor→Parser→ExcelWriter→ReportWriter chain
+    with no crash (invoice fields came back `None`, as expected —
+    the test PDF's content does not match the sample template, which
+    is a data issue, not a code defect).
+
+Not covered this session: a real, manual, UI-driven run against real
+sample invoice PDFs (Input Folder → Start → Report, clicked by a
+human through the actual running application). This is the explicit
+plan for the next session (see Unreleased/Next and
+PROJECT_CONTEXT.md §15).

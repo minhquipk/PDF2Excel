@@ -348,8 +348,6 @@ Confirmed in implementation: `PDFDetector._compose_confidence()`
 
 ------------------------------------------------------------------------
 
-------------------------------------------------------------------------
-
 ## ADR-024 --- Extractor as Mode-Dispatching, Non-Deciding Component
 
 **Status:** Accepted
@@ -679,3 +677,168 @@ place where raw PyMuPDF/OCR output is normalized into clean `WordToken`s
 for any downstream consumer.
 
 Confirmed in implementation: `core/extractor.py::Extractor._normalize_text()`.
+
+------------------------------------------------------------------------
+
+## ADR-037 --- ExcelWriter and ReportWriter Are Two Separate Modules, Not One ReportService
+
+**Status:** Accepted
+
+An early design draft (`Technical_Design_excel_writer.docx`) proposed a
+single `ReportService` layer between the UI and `ExcelWriter`, combining
+Excel writing and `report.txt` generation into one `generateReport()`
+call. This was rejected during discussion.
+
+Reason: `Worker.__init__` already carried two separate placeholder
+attributes (`self._excel_writer = None`, `self._report_writer = None`)
+from earlier sessions — the original design already anticipated two
+distinct components, not a merged one. This is also consistent with the
+two triggers being genuinely different in nature:
+
+-   Excel writing happens **automatically**, exactly once, at the end of
+    `Worker.process()` (ADR-008 timing).
+-   `report.txt` generation happens **as a side effect of that same
+    automatic write** (see ADR-040) — not as a separately-triggered
+    action.
+
+`ExcelWriter` and `ReportWriter` have no dependency on each other.
+`ExcelWriter` never imports `ReportWriter` or vice versa; `Worker`
+orchestrates both.
+
+Confirmed in implementation: `ui/worker.py::Worker.__init__`,
+`Worker._write_excel()`.
+
+------------------------------------------------------------------------
+
+## ADR-038 --- Excel Mapping Stored as External JSON, Loaded Fail-Fast (Not Fail-Soft)
+
+**Status:** Accepted
+
+`ExcelMapping` (`table`, `columns`) is loaded from an external
+`mapping.json` (`resources/excel_mapping.json`) via `core/excel_mapper.py::Mapper`,
+following the same "external JSON -> frozen dataclass" pattern already
+established for Template Definitions (ADR-031).
+
+Unlike `TemplateLoader` (fail-soft per file, ADR-031), `Mapper` treats
+every error as **fatal** — any malformed `mapping.json` raises
+`MappingError` (defined in `core/excel_mapper.py`, not in
+`core/excel_writer.py` — each module owns the exceptions it raises, to
+avoid a cross-import between `excel_mapper.py` and `excel_writer.py`).
+
+Reason for the fail-fast/fail-soft asymmetry: with templates, a single
+invalid JSON file among many is an isolated, tolerable loss (other
+templates still work). With Excel mapping, there is exactly one mapping
+file and it is a hard precondition for `ExcelWriter` to write anything
+at all — there is no "partially valid mapping" concept to fall back to.
+
+`Mapper.load()` is called lazily inside `Worker._write_excel()`, **not**
+in `Worker.__init__()` (unlike `TemplateLoader`, which is loaded eagerly
+in `__init__`). Reason: loading eagerly in `__init__` would crash the
+application at startup if `mapping.json` is malformed, before the user
+can do anything. Loading lazily at the end of the batch allows a bad
+mapping to be handled like any other pipeline-stage error: caught,
+reported via the `error` signal, without crashing the app, and still
+followed by `report.txt` generation (ADR-040) so the user sees why
+nothing was written.
+
+`FieldDefinition.field_name` validation (ADR-031) is reused for
+`ExcelMapping.columns` values: `Mapper._build_mapping()` checks every
+mapped `field_name` against `dataclasses.fields(InvoiceInfo)` at load
+time, catching authoring typos before `ExcelWriter` ever runs.
+
+Confirmed in implementation: `core/excel_mapper.py`, `resources/excel_mapping.json`,
+`config.py::EXCEL_MAPPING_PATH`.
+
+------------------------------------------------------------------------
+
+## ADR-039 --- Excel Table Column Mismatch Is a Per-Column Soft Failure
+
+**Status:** Accepted
+
+`ExcelMapping.columns` is validated against `InvoiceInfo` field names at
+load time (ADR-038), but cannot be validated against the **actual**
+Excel Table headers in the user-selected output workbook — the JSON
+mapping and the physical `.xlsx` file are two independent sources that
+can only be cross-checked at runtime.
+
+`ExcelWriter._resolve_columns()` compares `mapping.columns` against the
+real header row of the target Excel Table. A mapped column absent from
+the workbook is recorded in `ExcelWriteResult.errors` and skipped; all
+other, correctly-matched columns are still written. This mirrors the
+existing "one bad field does not fail the whole record" principle
+(ADR-032) at the column level, and keeps `ExcelWriter.write()` from
+raising for a condition that is common and partially recoverable (e.g.
+a user's Excel template has renamed one column).
+
+Global, non-recoverable failures — workbook not found
+(`WorkbookNotFoundError`), Table not found (`ExcelTableNotFoundError`),
+save failure (`WorkbookSaveError`) — remain hard `raise`s, since there
+is nothing partial to write in those cases.
+
+Confirmed in implementation: `core/excel_writer.py::ExcelWriter._resolve_columns()`.
+
+------------------------------------------------------------------------
+
+## ADR-040 --- ReportWriter Has Two Fully Separate Output Channels
+
+**Status:** Accepted
+
+`ReportWriter.write(results, excel_result)` receives two independent
+inputs — `list[PDFResult]` and `ExcelWriteResult` — and routes each to
+a distinct output with no content mixing between them:
+
+1.  `list[PDFResult]` (per-file pipeline outcome: status + note) ->
+    `utils/logger.py` (console + `logs/app.log`, via `FileHandler`
+    added in this module's implementation). Intended audience: dev/
+    admin. Every file is logged, regardless of status; `WARNING`/
+    `FAILED` statuses are logged at `logging.WARNING`, others at
+    `logging.INFO`. This file **accumulates** across runs (standard
+    `FileHandler` append behavior) — a full history is intentional.
+
+2.  `ExcelWriteResult` (Summary / Warnings / Errors from the Excel
+    write) -> `reports/Report.txt` (fixed filename, no timestamp,
+    per `core/constants.py::Report`). Intended audience: end-user, via
+    the UI's Report button. This file is **overwritten** on every run —
+    it always reflects only the most recent `process()` call.
+
+Rationale for keeping the two channels separate rather than merging
+`PDFResult` data into `report.txt`: they serve different audiences at
+different levels of detail. `PDFResult.note` is pipeline-internal
+diagnostic text (detection confidence, extraction warnings); an
+end-user does not need it to take action. What the end-user needs from
+`report.txt` is exactly two things: which invoice fields came out
+`None` (ADR-033) and whether the Excel write itself succeeded — both
+of which live in `ExcelWriteResult`, not in `PDFResult`.
+
+`ExcelWriter` itself never writes to either channel (ADR-006) — it only
+returns `ExcelWriteResult` as plain data; `ReportWriter` is the sole
+owner of both side effects.
+
+Confirmed in implementation: `core/report_writer.py`,
+`core/constants.py::Report`, `utils/logger.py::_configure_root()`
+(FileHandler added), `config.py::LOG_DIR`/`REPORTS_DIR`.
+
+------------------------------------------------------------------------
+
+## ADR-041 --- The Report Button Opens an Already-Generated File; It Never Triggers Generation
+
+**Status:** Accepted
+
+`report.txt` is generated exactly once per `process()` run, automatically,
+as part of `Worker._write_excel()` (ADR-008 timing, ADR-040 content) —
+**not** when the user clicks the "Report" button.
+
+`MainWindow._report()` only reads `Worker.report_path` (a property
+exposing the path already written) and opens it via
+`QDesktopServices.openUrl()`, using the OS's default handler for
+`.txt` files. If `report_path` is `None` (no run has completed yet), a
+`QMessageBox.information` is shown instead; if the OS fails to open
+the file, a `QMessageBox.warning` is shown. The button never calls
+`ExcelWriter` or `ReportWriter` itself.
+
+This keeps `MainWindow` a pure UI coordinator (ADR-001) — it has no
+role in deciding *when* a report is produced, only in surfacing one
+that already exists.
+
+Confirmed in implementation: `ui/main_window.py::MainWindow._report()`,
+`ui/worker.py::Worker.report_path`.

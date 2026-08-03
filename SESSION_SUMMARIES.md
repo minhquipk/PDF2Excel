@@ -762,3 +762,187 @@ sang bước kế). 3 lỗi thiết kế thực chất (diacritics, key_tokens n
 value_pattern lỏng) được phát hiện qua kiểm thử thực nghiệm với dữ liệu
 mô phỏng, không phải qua review tĩnh — xác nhận giá trị của việc chạy
 thử thực tế thay vì chỉ đọc code.
+
+---
+
+# Session 2026-08-03
+
+## Objective
+
+Thiết kế và triển khai đầy đủ module `excel_writer.py` (ghi
+`list[InvoiceInfo]` vào Excel Table có sẵn) và `report_writer.py` (xuất
+báo cáo cho tính năng Report trên UI), hoàn thiện pipeline end-to-end
+lần đầu tiên. Sau đó kiểm thử toàn bộ 8 bước triển khai trên source
+thật đã push lên GitHub, và giải quyết vấn đề dependency file còn thiếu
+(`requirements.txt`).
+
+## Completed
+
+### Thảo luận thiết kế (trước khi implement — Rule 11/12)
+
+Người dùng cung cấp `Technical_Design_excel_writer.docx` làm điểm khởi
+đầu thảo luận. Qua nhiều vòng trao đổi, thiết kế được tinh chỉnh dần:
+
+1.  **Bác bỏ `ReportService`** (đề xuất ban đầu trong tài liệu, gộp
+    Excel writing + report.txt generation vào 1 lệnh gọi) — dựa trên
+    bằng chứng cụ thể trong source: `Worker.__init__` đã có sẵn 2
+    thuộc tính placeholder tách biệt (`self._excel_writer = None`,
+    `self._report_writer = None`) từ các session trước, cho thấy
+    thiết kế gốc đã dự tính 2 module riêng biệt.
+2.  **Làm rõ vai trò nút Report**: không kích hoạt sinh report, chỉ mở
+    file đã được sinh tự động ở cuối `Worker.process()` (đối xứng ADR-008).
+3.  **2 loại thông tin report tách biệt hoàn toàn** (theo yêu cầu người
+    dùng, qua nhiều lần điều chỉnh): `list[PDFResult]` → log kỹ thuật
+    (dev/admin, qua `utils/logger.py` + `FileHandler` mới); `ExcelWriteResult`
+    → `report.txt` (end-user, ghi đè mỗi lần chạy). Ban đầu có nhầm lẫn
+    gộp 2 luồng vào cùng nội dung report.txt — đã được người dùng chỉnh
+    lại rõ ràng qua 2 lượt trao đổi.
+4.  Đổi tên exception theo namespace dự án: tránh dùng lại từ "Template"
+    (đã có nghĩa cố định là mẫu hóa đơn) cho khái niệm workbook Excel —
+    `WorkbookNotFoundError`, `ExcelTableNotFoundError` thay vì
+    `TemplateNotFoundError`/`TableNotFoundError` trong tài liệu gốc.
+
+### Triển khai (8 bước, mỗi bước review source → giải thích → implement
+→ compile/run/verify → xác nhận, theo đúng DEVELOPMENT_WORKFLOW.md)
+
+1.  `core/models.py`: thêm `ExcelMapping`, `InvoiceWarning`,
+    `ExcelWriteResult` (frozen dataclass, đối xứng pattern
+    `TemplateDefinition`/`Evidence`/`Confidence` đã có).
+2.  `resources/excel_mapping.json` + `config.py::EXCEL_MAPPING_PATH`.
+3.  `core/excel_mapper.py`: `Mapper` — fail-fast (khác `TemplateLoader`
+    fail-soft), raise `MappingError`.
+4.  `core/excel_writer.py`: `ExcelWriter.write()` (openpyxl), 3
+    exception class, cột mapping không khớp header thật → soft-fail
+    vào `ExcelWriteResult.errors`.
+5.  `core/constants.py` + `config.py::LOG_DIR` + `utils/logger.py`:
+    thêm `FileHandler` (UTF-8, `logs/app.log`) cạnh `StreamHandler`
+    có sẵn.
+6.  `core/report_writer.py`: `ReportWriter.write()` — 2 kênh output
+    tách biệt hoàn toàn (logger vs report.txt).
+7.  `ui/worker.py`: khởi tạo `ExcelWriter()`/`ReportWriter()` thật,
+    thêm `report_path` property, implement `_write_excel()` (load
+    mapping lazy — không load ở `__init__` để tránh crash app khi
+    mapping.json lỗi).
+8.  `ui/main_window.py`: kết nối `error` Signal (tồn tại từ đầu dự án
+    nhưng chưa từng được `connect`), implement lại `_report()` (mở
+    file thay vì message "pending").
+
+### Giải quyết dependency file còn thiếu
+
+`requirements.txt` được tạo, pin đúng 4 version đã cài và kiểm thử
+thành công trong phiên (`PySide6==6.11.1`, `PyMuPDF==1.28.0`,
+`rapidfuzz==3.14.5`, `openpyxl==3.1.5`) — đóng Known Issue tồn đọng từ
+Session 2026-08-01/02.
+
+## Architecture Decisions
+
+Xem `ARCHITECTURE_DECISIONS.md` ADR-037 đến ADR-041. Tóm tắt:
+
+-   ADR-037: `ExcelWriter`/`ReportWriter` tách biệt, không phụ thuộc
+    lẫn nhau, không có `ReportService` trung gian.
+-   ADR-038: Mapping load fail-fast, lazy (không ở `__init__`).
+-   ADR-039: Cột mapping không khớp workbook thật → soft-fail per
+    column, không raise toàn cục.
+-   ADR-040: `ReportWriter` 2 kênh output tách biệt hoàn toàn
+    (logger tích lũy vs report.txt ghi đè).
+-   ADR-041: Report button chỉ mở file đã sinh sẵn, không tự sinh.
+
+## Issues Encountered
+
+### Không có repo mount trong môi trường làm việc
+
+Vấn đề: Toàn bộ 8 bước triển khai ban đầu chỉ tồn tại dưới dạng code
+đề xuất trong chat — không có filesystem thật nào được ghi vào. Người
+dùng tự áp dụng code vào repo GitHub cá nhân.
+
+Giải quyết: Sau khi người dùng xác nhận đã push code lên GitHub
+(public), tiến hành `git clone` trực tiếp vào container, đối chiếu
+từng file với đúng nội dung đã thống nhất qua 8 bước (khớp 100%,
+không lệch) trước khi chạy kiểm thử thật.
+
+### `WorkbookSaveError` không tái hiện được trong môi trường test
+
+Vấn đề: Container test chạy với quyền root, bỏ qua toàn bộ kiểm tra
+permission của hệ điều hành — không thể ép `openpyxl.save()` thất bại
+do quyền truy cập.
+
+Giải quyết: Không giải quyết được trong phiên này — logic xử lý
+(`_save_workbook()` bắt `OSError`, cha của `PermissionError`) được
+đánh giá là đúng về mặt code, nhưng cần người dùng tự verify trên máy
+thật (quyền user thường) trước khi coi là đã kiểm chứng đầy đủ. Ghi
+nhận vào Known Issues, đưa vào kế hoạch phiên sau.
+
+### Nhầm lẫn thiết kế report_writer qua nhiều vòng trao đổi
+
+Vấn đề: Ban đầu tôi (Claude) đề xuất `ReportWriter` nhận `ExcelWriteResult`
+duy nhất; sau đó hiểu nhầm ý người dùng là gộp `list[PDFResult]` +
+`ExcelWriteResult` vào cùng nội dung report.txt; người dùng phải chỉnh
+lại 2 lần để làm rõ 2 luồng dữ liệu phải tách biệt hoàn toàn về xử lý
+(dù cùng nhận chung ở 1 lệnh gọi `write()`).
+
+Giải quyết: Chốt lại đúng ý người dùng — `list[PDFResult]` chỉ ra
+`logger`, `ExcelWriteResult` chỉ ra `report.txt`, không trộn nội dung.
+Verify bằng test kiểm tra rõ 2 hành vi khác nhau (report.txt ghi đè,
+log tích lũy).
+
+## Validation
+
+Verify bằng kiểm thử tự động thực tế (không phải review tĩnh), chạy
+trên source đã clone từ GitHub (`https://github.com/minhquipk/PDF2Excel`):
+
+-   `core/models.py` dataclass mới: frozen/immutable đúng.
+-   `core/excel_mapper.py`: happy path + 5 case lỗi đều đúng.
+-   `core/excel_writer.py`: happy path, 3/4 case lỗi verify được
+    (`WorkbookSaveError` không tái hiện được — xem Issues Encountered).
+-   `utils/logger.py`: `FileHandler` hoạt động đúng, không nhân đôi,
+    giữ đúng dấu tiếng Việt.
+-   `core/report_writer.py`: report.txt ghi đè, log tích lũy — đúng cả
+    2 hành vi khác nhau đã thống nhất.
+-   `ui/worker.py::_write_excel()`: happy path + error path (giả lập
+    mapping.json lỗi) đều đúng.
+-   `ui/main_window.py::_report()`: 4 nhánh UI đều đúng (mock
+    QMessageBox/QDesktopServices, chạy offscreen).
+-   Regression toàn pipeline với 1 PDF thật (tự tạo qua PyMuPDF): chạy
+    hết Reader→Detector→Extractor→Parser→ExcelWriter→ReportWriter
+    không crash.
+
+**Chưa verify**: một lượt chạy thật qua UI (người dùng tự bấm Input
+Folder → Start → Report) với dữ liệu PDF hóa đơn thật — đây là kế
+hoạch chính của phiên tiếp theo.
+
+## Next Session
+
+Đã thống nhất chọn **Hướng 1** (kiểm thử end-to-end với data thật)
+thay vì Hướng 2 (triển khai OCR trước), lý do: ADR-013 (Mock First) —
+Mock `OCREngine` đã đủ cho PDF Digital-mode; làm OCR đồng thời với lần
+đầu chạy thật sẽ gộp 2 rủi ro chưa kiểm chứng cùng lúc, vi phạm
+Rule 2/3.
+
+Kế hoạch 5 bước (xem chi tiết PROJECT_CONTEXT.md §15):
+
+1.  Chuẩn bị PDF mẫu thật (ưu tiên Digital-type).
+2.  Sửa `resources/excel_mapping.json` khớp workbook Excel thật.
+3.  Chạy app thật end-to-end (lưu ý: entry point thật đang ở
+    `ui/main_window.py`, không phải `main.py` rỗng — cần làm rõ).
+4.  Quan sát kết quả Excel/report.txt/template match.
+5.  Sửa `sample_invoice_v1.json` (2 lỗi đã biết) dựa trên dữ liệu thật.
+
+Sau đó mới quay lại Hướng 2 (OCR thật) cho các PDF Scanned/Hybrid nếu
+có trong bộ data mẫu.
+
+Việc tồn đọng khác: verify `WorkbookSaveError` trên máy thật; unit
+test `Extractor._rotate_bbox()`; giải quyết vai trò `processor.py`;
+giải quyết discrepancy `main.py`/`ui/main_window.py`; dọn dead code
+`UIText.REPORT_PENDING`.
+
+## Notes
+
+Toàn bộ quá trình thiết kế lần này khác các session trước ở chỗ: bắt
+đầu từ 1 tài liệu Word do người dùng cung cấp, trải qua nhiều vòng
+phản biện/điều chỉnh thiết kế trước khi implement (đúng tinh thần Rule 11
+"Freeze design before implementation" — nhưng ở đây "freeze" diễn ra
+qua nhiều lượt xác nhận tăng dần, không phải 1 lần duy nhất). Sau khi
+implement xong, toàn bộ 8 bước được kiểm chứng lại trên source GitHub
+thật (không phải chỉ trên code đề xuất trong chat) — xác nhận source
+khớp 100% với thiết kế đã thống nhất, không có sai lệch nào phát sinh
+trong quá trình người dùng tự áp dụng code.

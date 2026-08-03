@@ -61,7 +61,10 @@ PDFResult
 Memory (list[PDFResult])
     │
     ▼
-ExcelWriter (pending)
+ExcelWriter
+    │
+    ▼
+ReportWriter ──▶ logs/app.log (list[PDFResult]) + reports/Report.txt (ExcelWriteResult)
 ```
 
 UI is completely separated from business logic.
@@ -79,6 +82,7 @@ PDF2Excel/
 
     config.py
     main.py
+    requirements.txt
 
     ui/
         base_widget.py
@@ -96,6 +100,7 @@ PDF2Excel/
     core/
         constants.py
         enums.py
+        excel_mapper.py
         excel_writer.py
         extractor.py
         models.py
@@ -104,11 +109,13 @@ PDF2Excel/
         pdf_detector.py
         pdf_reader.py
         processor.py
+        report_writer.py
         template_loader.py
         template_matcher.py
         value_converter.py
-        
+
     resources/
+        excel_mapping.json
         templates/
             sample_invoice_v1.json
 ```
@@ -137,9 +144,10 @@ Completed:
 - base_widget.py
 - widgets.py
 - main_window.py
-- worker.py — pipeline integration completed: Reader → Detector →
-  Extractor (conditional on a valid mode). Excel writing and invoice
-  parsing remain pending.
+- worker.py — pipeline integration completed end-to-end: Reader →
+  Detector → Extractor (conditional on a valid mode) → Parser →
+  ExcelWriter → ReportWriter, all wired in `Worker._write_excel()`
+  (ADR-037/038/040).
 - processing_table_model.py
 - value_converter.py — stateless TEXT/DECIMAL/DATE conversion, không
   raise (trả None khi thất bại).
@@ -149,7 +157,23 @@ Completed:
   chuẩn hoá dấu tiếng Việt) → Score/Decision → Windowing → Value
   Matching.
 - parser.py — orchestrator mỏng, trả `InvoiceInfo | None`.
-- utils/logger.py — logger dùng chung, console handler.
+- excel_mapper.py — `Mapper.load()` đọc/validate `resources/excel_mapping.json`
+  thành `ExcelMapping`; lỗi là fatal (khác `template_loader.py`), raise
+  `MappingError` (ADR-038).
+- excel_writer.py — `ExcelWriter.write()` ghi `list[InvoiceInfo]` vào
+  Excel Table có sẵn (openpyxl); trả `ExcelWriteResult` (dữ liệu thuần,
+  không tự log/report — ADR-006, ADR-037); cột mapping không khớp
+  workbook thực tế → soft-fail vào `ExcelWriteResult.errors` (ADR-039).
+- report_writer.py — `ReportWriter.write()` có 2 kênh output tách biệt:
+  `list[PDFResult]` → `logs/app.log` (qua `utils/logger.py`, dev/admin,
+  tích lũy qua các lần chạy); `ExcelWriteResult` → `reports/Report.txt`
+  (end-user, ghi đè mỗi lần chạy) (ADR-040).
+- utils/logger.py — logger dùng chung, console handler + `FileHandler`
+  (`logs/app.log`, UTF-8, đúng ADR-014) — bổ sung khi triển khai
+  report_writer.py.
+- requirements.txt — pin version 4 dependency đã xác nhận qua kiểm thử
+  thực tế: `PySide6==6.11.1`, `PyMuPDF==1.28.0`, `rapidfuzz==3.14.5`,
+  `openpyxl==3.1.5`.
 
 Current UI features:
 
@@ -164,11 +188,26 @@ Current UI features:
 
 Still pending (not yet implemented):
 
-- excel_writer.py
-- Report export (bao gồm cả việc hiển thị field InvoiceInfo = None và
-  trường hợp Parser không xác định được template — xem ADR-033)
-- Real OCR backend (ocr_engine.py currently Mock only)
+- Real OCR backend (ocr_engine.py currently Mock only) — deliberately
+  deferred until after end-to-end verification with real sample PDFs
+  (see Section 15, Next Tasks). Mock is sufficient for Digital-mode
+  PDFs, which do not invoke OCREngine at all.
 - Tài liệu hướng dẫn viết Template JSON (Template Authoring Guide)
+- `sample_invoice_v1.json` vẫn còn 2 lỗi đã biết cố ý chưa sửa (short
+  `key_tokens`, loose `value_pattern`) — chờ dữ liệu PDF thật để sửa
+  đúng (xem Section 15).
+
+Resolved this session (previously "Still pending" or "Known Issues" —
+now implemented and verified, see Section 14/15 for verification
+caveats):
+
+- excel_writer.py — implemented (`core/excel_writer.py`), see ADR-037/
+  038/039.
+- Report export — implemented (`core/report_writer.py`); UI Report
+  button now opens a real generated `reports/Report.txt` (ADR-040/041),
+  no longer a "pending" placeholder message.
+- Dependency pinning — `requirements.txt` added at project root
+  (previously an open item since Session 2026-08-01/02).
 
 Note: `core/processor.py` currently contains only placeholder method
 calls (`start/stop/pause/resume`) with no implementation. The actual
@@ -437,7 +476,8 @@ Image
 
 Excel
 
-- openpyxl
+- openpyxl — dùng bởi `excel_writer.py` để ghi vào Excel Table có sẵn
+  (đọc/mở rộng `table.ref`, ghi cell theo `ExcelMapping`).
 
 Regex
 
@@ -449,8 +489,13 @@ Data
 
 Fuzzy Matching
 
-- rapidfuzz — dùng bởi template_matcher.py cho Key Matching (cần thêm
-  vào requirements.txt/dependency file của project — hiện chưa có).
+- rapidfuzz — dùng bởi template_matcher.py cho Key Matching.
+
+Dependency file: `requirements.txt` (project root) — pin version 4
+package trên (`PySide6`, `PyMuPDF`, `rapidfuzz`, `openpyxl`), version
+đã được xác nhận qua kiểm thử thực tế trong phiên triển khai
+excel_writer/report_writer. Trước đó dự án không có dependency file
+nào (Known Issue từ Session 2026-08-01/02) — đã giải quyết.
 
 ---
 
@@ -507,9 +552,14 @@ Purpose (historical):
 - Test TableModel
 
 Current status: Mock processing has been replaced by the real
-PDFReader → PDFDetector pipeline in `Worker._process_pdf()` for the
-detection stage. Extraction, parsing, OCR and Excel writing are not
-yet implemented, so the pipeline is not yet end-to-end functional.
+pipeline end-to-end: PDFReader → PDFDetector → Extractor → Parser →
+ExcelWriter → ReportWriter, all wired in `ui/worker.py`. `OCREngine`
+remains a Mock (ADR-013) — this only affects Scanned/Hybrid-mode
+pages; Digital-mode PDFs (the majority case) do not invoke it at all.
+The pipeline has been verified with unit-level and mocked-input tests
+(see SESSION_SUMMARIES.md, Session 2026-08-03) but **not yet** with a
+real user-driven run against real sample PDF data through the actual
+UI — that is the planned next step (see Section 15).
 
 ---
 
@@ -519,16 +569,33 @@ Current:
 
 - Elapsed Time not implemented.
 - ETA not implemented.
-- Report export not implemented.
-- Regex Parser not implemented.
-- Excel Writer not implemented.
-- Real OCR backend not implemented (`ocr_engine.py` is Mock only).
-- `core/processor.py` is a placeholder (4 undefined method calls);
-  its relationship to `Worker.process()` (which currently acts as
-  the real orchestrator) needs clarification.
-- Possible import path issues to verify: `core/models.py` uses
-  `from enums import ...` and `ui/widgets.py` uses
-  `from base_widget import ...` (missing package prefix).
+- Real OCR backend not implemented (`ocr_engine.py` is Mock only) —
+  intentionally deferred, see Section 15.
+- `core/processor.py` is a placeholder (4 undefined method calls, not
+  inside any class/function — calling it directly would raise
+  `NameError`, not just "unimplemented"); its relationship to
+  `Worker.process()` (which currently acts as the real orchestrator)
+  needs clarification.
+- `main.py` is currently empty. The actual application entry point
+  (`if __name__ == "__main__":` block constructing `QApplication` and
+  `MainWindow`) lives in `ui/main_window.py` instead. This discrepancy
+  was noticed during source review but not yet discussed/resolved —
+  needs clarification on whether `main.py` should become the real
+  entry point or be removed.
+- `core/excel_writer.py::WorkbookSaveError` has not been verified
+  against a real OS-level permission failure (e.g. target `.xlsx` open
+  in Excel, or read-only file). Testing was attempted but could not be
+  reproduced in the development/test container, which runs with root
+  privileges and bypasses normal file permission checks. The exception
+  handling path (`_save_workbook()` catching `OSError`) is logically
+  correct and covered by other automated tests, but this specific
+  failure mode is unverified end-to-end. Needs manual verification on
+  a real user machine before being considered fully validated (see
+  Section 15).
+- `core/constants.py::UIText.REPORT_PENDING` is now dead code — no
+  longer referenced anywhere in `ui/main_window.py` after `_report()`
+  was reimplemented to open a real `report.txt` (ADR-041). Not yet
+  removed; flagged for cleanup.
 - PDFDetector Rule System currently implements 5 of 7 Rule
   Categories defined in the TDS (§7.2): Text, Image, Consistency,
   Quality, Layout are implemented; Document and Graphics rule
@@ -558,52 +625,96 @@ Resolved (previously listed here, now implemented — see Section 4):
 - PDF Reader — implemented (`core/pdf_reader.py`).
 - PDF Detector reasoning engine — implemented (`core/pdf_detector.py`).
 - Extractor — implemented (`core/extractor.py`).
+- Regex Parser — implemented (`core/parser.py`, `core/template_matcher.py`).
+- Excel Writer — implemented (`core/excel_writer.py`), see ADR-037/038/039.
+- Report export — implemented (`core/report_writer.py`), see ADR-040/041.
+- Import path issue — re-verified against current source (this
+  session): `core/models.py` now imports via `from core.enums import
+  ...` and `ui/widgets.py` via `from ui.base_widget import
+  BaseWidget`, both with correct package prefixes. The issue described
+  in earlier sessions (Session 2026-07-29) no longer reproduces in the
+  current source; closing as resolved. (Note: it is unclear from
+  available history whether this was fixed deliberately in an
+  undocumented change or was miscategorized originally — flagging for
+  awareness, not re-opening.)
+- Dependency file missing — resolved via `requirements.txt` added at
+  project root, pinning `PySide6`, `PyMuPDF`, `rapidfuzz`, `openpyxl`.
 
 ---
 
 # 15. Next Tasks
 
-Priority order:
+Decision made at the end of Session 2026-08-03: two candidate
+directions were discussed for the next session —
+
+1.  Wire up the UI end-to-end with real config files and run against
+    real sample PDF data.
+2.  Implement a real OCR backend first, then test.
+
+**Direction 1 was chosen**, per ADR-013 (Mock First: validate UI/
+Worker/Signals before replacing a Mock) and because Mock `OCREngine`
+is already sufficient for Digital-mode PDFs — implementing OCR now
+would conflate two untested things at once (new OCR code + first-ever
+real end-to-end run), which conflicts with Rule 2/3 of
+DEVELOPMENT_WORKFLOW.md (one feature at a time, small reversible
+changes).
+
+Priority order for the next session:
 
 1.
 
-parser.py (regex-based invoice parsing)
+Place real sample PDF files (Digital-type first, to stay independent
+of the still-Mock OCREngine) in a local folder outside the repo.
 
 ↓
-
-ExtractionResult.words_by_page
-
-↓
-
-InvoiceInfo
 
 2.
 
-Unit tests for Extractor._rotate_bbox() (four rotation cases)
+Adjust `resources/excel_mapping.json` to match the real target output
+Excel workbook's actual Table name and column headers.
+
+↓
 
 3.
 
-excel_writer.py
+Run the real application end-to-end (`python ui/main_window.py` —
+see Section 14, `main.py` entry-point discrepancy still open) against
+the sample folder: Input Folder → Output Excel → Start → wait →
+Report.
 
 ↓
-
-list[PDFResult]
-
-↓
-
-Excel
 
 4.
 
-Real OCR backend (replace ocr_engine.py Mock)
+Inspect results: does the output `.xlsx` contain correct data? Does
+`reports/Report.txt` content make sense? Does the sample template
+(`sample_invoice_v1.json`) actually match fields in the real PDFs?
+
+↓
 
 5.
 
-Error Report
+Based on step 4's findings, fix `resources/templates/sample_invoice_v1.json`'s
+two known issues (short `key_tokens`, loose `value_pattern` — see
+Section 14) using real data instead of guessing.
 
-6.
+After Direction 1 is verified end-to-end on real Digital-mode data,
+revisit Direction 2 (real OCR backend) for any Scanned/Hybrid-mode
+PDFs present in the sample set.
 
-Resolve processor.py role vs Worker.process()
+Also pending, not yet scheduled:
+
+-   Manual verification of `WorkbookSaveError` against a real OS
+    permission failure (see Section 14) — could not be reproduced in
+    the root-privileged test container.
+-   Unit tests for `Extractor._rotate_bbox()` (four rotation cases) —
+    still open since Session 2026-07-31.
+-   Resolve `processor.py` role vs `Worker.process()` — still open
+    since Session 2026-07-29.
+-   Resolve `main.py` vs `ui/main_window.py` entry-point discrepancy
+    (see Section 14).
+-   Remove dead code: `core/constants.py::UIText.REPORT_PENDING` (see
+    Section 14).
 
 ---
 
