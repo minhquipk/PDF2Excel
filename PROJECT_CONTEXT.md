@@ -150,12 +150,18 @@ Completed:
   (ADR-037/038/040).
 - processing_table_model.py
 - value_converter.py — stateless TEXT/DECIMAL/DATE conversion, không
-  raise (trả None khi thất bại).
+  raise (trả None khi thất bại). Từ Session 2026-08-07: `_to_decimal()`
+  strip ký tự `%` cuối chuỗi trước khi parse (ADR-043).
 - template_loader.py — đọc/validate JSON Template Definition, fail-soft
-  per file.
+  per file. Từ Session 2026-08-07: parse thêm `sections` và field bắt
+  buộc `section` trên mỗi field.
 - template_matcher.py — Key Matching (Line/Phrase Clustering + fuzzy,
   chuẩn hoá dấu tiếng Việt) → Score/Decision → Windowing → Value
-  Matching.
+  Matching. Từ Session 2026-08-07: Key Matching nay giới hạn phạm vi
+  theo Section (khối tài liệu field thuộc về - `SectionDefinition`,
+  giải quyết va chạm key_tokens giữa các khối, VD bên bán/bên mua, xem
+  ADR-045); Value Matching field Text nay ghép nhiều `WordToken` liền
+  kề cùng dòng thành 1 giá trị thay vì chỉ lấy 1 token (ADR-044).
 - parser.py — orchestrator mỏng, trả `InvoiceInfo | None`.
 - excel_mapper.py — `Mapper.load()` đọc/validate `resources/excel_mapping.json`
   thành `ExcelMapping`; lỗi là fatal (khác `template_loader.py`), raise
@@ -174,6 +180,8 @@ Completed:
 - requirements.txt — pin version 4 dependency đã xác nhận qua kiểm thử
   thực tế: `PySide6==6.11.1`, `PyMuPDF==1.28.0`, `rapidfuzz==3.14.5`,
   `openpyxl==3.1.5`.
+- resources/EXCEL_MAPPING_GUIDE.md — hướng dẫn viết `excel_mapping.json`
+  cho người điều hành không biết lập trình (Session 2026-08-07).
 
 Current UI features:
 
@@ -193,9 +201,14 @@ Still pending (not yet implemented):
   (see Section 15, Next Tasks). Mock is sufficient for Digital-mode
   PDFs, which do not invoke OCREngine at all.
 - Tài liệu hướng dẫn viết Template JSON (Template Authoring Guide)
-- `sample_invoice_v1.json` vẫn còn 2 lỗi đã biết cố ý chưa sửa (short
-  `key_tokens`, loose `value_pattern`) — chờ dữ liệu PDF thật để sửa
-  đúng (xem Section 15).
+- `resources/excel_mapping.json` vẫn còn là mapping mẫu (`tblInvoices`),
+  chưa khớp workbook Excel thật của người dùng — bước 2 trong kế hoạch
+  5 bước ở Section 15 vẫn chưa thực hiện.
+- Chưa có lượt chạy UI thật (Input Folder → Start → Report) trên ứng
+  dụng thật với dữ liệu PDF thật — `sample_invoice_v1.json` (v3) mới chỉ
+  verify bằng script kiểm thử trực tiếp gọi `PDFReader`/`Extractor`/
+  `TemplateMatcher` trong sandbox, KHÔNG phải qua `Worker`/`MainWindow`
+  thật.
 
 Resolved this session (previously "Still pending" or "Known Issues" —
 now implemented and verified, see Section 14/15 for verification
@@ -619,6 +632,30 @@ Current:
   cần tinh chỉnh khi có PDF hóa đơn thật.
 - resources/templates/sample_invoice_v1.json cố ý giữ 2 lỗi đã biết
   (key_tokens ngắn, value_pattern lỏng) — chưa sửa, chờ dữ liệu thật.
+- - Value Matching nhiều từ (ADR-044, Session 2026-08-07) dùng cơ chế
+  gap-based, dừng mở rộng khi gặp token kết thúc bằng dấu `:`. Rủi ro
+  còn lại: nếu 1 dòng có 2 field liền kề mà nhãn field thứ 2 KHÔNG kết
+  thúc bằng `:`, giá trị vẫn có thể bị ghép tràn sang field kế bên. Mới
+  verify trên 1 PDF test duy nhất — chưa đủ dữ liệu để đánh giá tần
+  suất rủi ro này trên layout đa dạng hơn.
+- Section (ADR-045, Session 2026-08-07) giảm mạnh nhưng KHÔNG loại bỏ
+  hoàn toàn rủi ro va chạm: bản thân section header vẫn dùng chung cơ
+  chế fuzzy match, về lý thuyết vẫn có thể va chạm nếu 2 section dùng
+  `key_tokens` gần giống nhau trên 1 tài liệu khác.
+- `TemplateMatching.SECTION_TIE_MARGIN` (giá trị 10, thang 0-100 của
+  `rapidfuzz.fuzz.ratio()`) là placeholder ban đầu, cùng loại với các
+  hằng số khác trong `TemplateMatching` — cần tinh chỉnh khi có nhiều
+  mẫu hóa đơn thật hơn.
+- `FieldDefinition.section` nay là field BẮT BUỘC (không có default).
+  Mọi template JSON khác ngoài `sample_invoice_v1.json`, nếu phát sinh
+  sau này mà thiếu `section` trên 1 field, sẽ bị `TemplateLoader` skip
+  toàn bộ file đó (fail-soft per file, ADR-031) — cần lưu ý khi viết
+  Template Authoring Guide (mục dưới).
+- Section header 5+ từ có thể không bao giờ đạt fuzzy ratio tuyệt đối
+  do `TemplateMatching.MAX_KEY_WORDS = 4` giới hạn độ dài phrase sinh
+  ra khi Key Matching (VD "THÔNG TIN NGƯỜI MUA HÀNG:" — 5 từ — phải rút
+  gọn `key_tokens` xuống 4 từ để qua được `SECTION_TIE_MARGIN`, xem
+  ADR-045). Ràng buộc này áp dụng cho CẢ field lẫn section.
 
 Resolved (previously listed here, now implemented — see Section 4):
 
@@ -694,16 +731,32 @@ Inspect results: does the output `.xlsx` contain correct data? Does
 
 5.
 
-Based on step 4's findings, fix `resources/templates/sample_invoice_v1.json`'s
-two known issues (short `key_tokens`, loose `value_pattern` — see
-Section 14) using real data instead of guessing.
+Fix `sample_invoice_v1.json`'s two known issues~~ — Done, Session
+2026-08-07 (phạm vi thực tế rộng hơn nhiều: xem SESSION_SUMMARIES.md,
+Session 2026-08-07, và ADR-043/044/045). `sample_invoice_v1.json` hiện
+ở version 3, đã verify 12/12 field đúng trên `HD2026-0003_digital.pdf`
+BẰNG SCRIPT KIỂM THỬ TRỰC TIẾP trong sandbox — bước "chạy app thật qua
+UI" (mục 3 ở trên) vẫn CHƯA thực hiện, vẫn là việc cần làm tiếp theo.
 
-After Direction 1 is verified end-to-end on real Digital-mode data,
-revisit Direction 2 (real OCR backend) for any Scanned/Hybrid-mode
-PDFs present in the sample set.
+Sau khi có lượt chạy UI thật, quay lại Hướng 2 (OCR thật) cho các PDF
+Scanned/Hybrid nếu có trong bộ data mẫu.
 
 Also pending, not yet scheduled:
 
+-   Viết "Template Authoring Guide" — cần bổ sung quy tắc về
+    `sections`/`key_tokens` cho Section (VD giới hạn `MAX_KEY_WORDS=4`
+    khi chọn section header dài — phát hiện từ Session 2026-08-07),
+    ngoài các quy tắc đã ghi từ Session 2026-08-01/02 (tránh key 1 từ,
+    tránh `value_pattern` quá lỏng).
+-   Điều chỉnh `resources/excel_mapping.json` khớp workbook Excel thật
+    (đã có `resources/EXCEL_MAPPING_GUIDE.md` hướng dẫn cách viết, từ
+    Session 2026-08-07, nhưng bản thân file mapping mẫu vẫn chưa cập
+    nhật khớp workbook thật của người dùng).
+-   Đánh giá rủi ro tràn của gap-based Value merge (ADR-044) và va
+    chạm section header (ADR-045) trên nhiều mẫu hóa đơn thật đa dạng
+    hơn — hiện chỉ có 1 file test.
+-   Tinh chỉnh `TemplateMatching.SECTION_TIE_MARGIN` cùng các hằng số
+    `TemplateMatching.*` khác khi có thêm dữ liệu thật.
 -   Manual verification of `WorkbookSaveError` against a real OS
     permission failure (see Section 14) — could not be reproduced in
     the root-privileged test container.

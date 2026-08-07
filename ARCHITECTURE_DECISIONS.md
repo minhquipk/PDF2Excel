@@ -842,3 +842,84 @@ that already exists.
 
 Confirmed in implementation: `ui/main_window.py::MainWindow._report()`,
 `ui/worker.py::Worker.report_path`.
+
+------------------------------------------------------------------------
+
+ADR-042 --- Excel Mapping Schema Giữ Nguyên table + columns, Không Thêm 'sheet'
+
+Status: Accepted
+
+Trong phiên thảo luận excel_mapping.json, có đề xuất thêm trường sheet để chỉ rõ Excel Table nằm ở sheet nào. Đề xuất này đã bị rút lại sau khi phân tích ExcelWriter._find_table():
+
+python
+for worksheet in workbook.worksheets:
+    if table_name in worksheet.tables:
+        return worksheet, worksheet.tables[table_name]
+
+Hàm này duyệt toàn bộ sheet để tìm Table theo tên - không cần biết tên sheet để hoạt động đúng, vì Excel tự đảm bảo tên Table (ListObject) là duy nhất trong toàn workbook. Thêm sheet sẽ dư thừa cho mục đích "tìm được bảng", trong khi nếu muốn dùng sheet như một điều kiện validate bổ sung (fail-fast nếu Table bị dời sai sheet) thì cần quyết định thêm về ngữ nghĩa lỗi (raise cứng / soft-fail / chỉ dùng để tìm nhanh hơn) - người dùng quyết định không cần thêm độ phức tạp này.
+
+Confirmed: ExcelMapping (core/models.py), Mapper (core/excel_mapper.py), ExcelWriter._find_table() (core/excel_writer.py) - không đổi gì.
+
+------------------------------------------------------------------------
+
+ADR-043 --- ValueConverter Bỏ Ký Hiệu '%' Cuối Chuỗi Trước Khi Convert Decimal
+
+Status: Accepted
+
+Phát hiện qua kiểm thử thực nghiệm trên PDF hóa đơn thật (HD2026-0003_digital.pdf): field vat_rate trích được token "5%" (dấu % dính liền, do PyMuPDF không tách khoảng trắng giữa số và ký hiệu phần trăm). Decimal("5%") ném InvalidOperation, khiến field vat_rate luôn ra None dù Key/Value Matching đã trích đúng vị trí.
+
+ValueConverter._to_decimal() nay strip ký tự % ở cuối chuỗi (nếu có) trước khi áp thousand_separator/decimal_separator và gọi Decimal(). Strip vô điều kiện, không cần cấu hình gì thêm trong FieldDefinition/ decimal_format, vì % không bao giờ là 1 phần hợp lệ của số Decimal.
+
+Confirmed trong implementation: core/value_converter.py::ValueConverter._to_decimal(). Verify: ValueConverter._to_decimal("5%", None) → Decimal('5') (trước patch: None). Không ảnh hưởng các field Decimal khác (subtotal, vat_amount, total_amount) vì giá trị của chúng không có %.
+
+------------------------------------------------------------------------
+
+ADR-044 --- Value Matching Ghép Nhiều Từ Cho Field Text Bằng Gap-Based Line Clustering
+
+Status: Accepted
+
+Giải quyết Known Limitation đã ghi từ Session 2026-08-01/02 ("Value Matching captures a single WordToken only"): TemplateMatcher._select_best_value() trước đây chỉ trả về đúng 1 token gần Key nhất, khiến mọi field giá trị nhiều từ (company_name, address, buyer_name, payment_method) bị cắt cụt còn 1 từ. Xác nhận qua kiểm thử thực nghiệm trên PDF thật.
+
+Thiết kế đã chọn (trong 3 hướng thảo luận: gap-based / cả dòng trong window / dùng vị trí key field khác làm ranh giới): gap-based, tái dùng 2 constant đã có sẵn trong TemplateMatching - LINE_Y_TOLERANCE (xác định "cùng dòng") và WORD_GAP_TOLERANCE (xác định "liền kề") - đối xứng với cơ chế _cluster_lines/_cluster_phrases đã dùng ở Key Matching (ADR-035), không thêm constant mới.
+
+Chỉ áp dụng cho field ValueType.TEXT - Decimal/Date giữ nguyên hành vi cũ (luôn 1 token), vì trên thực tế các giá trị này luôn là 1 token liền mạch.
+
+Bổ sung phát hiện qua thực nghiệm: merge áp dụng cho MỌI field Text (kể cả field có value_pattern chỉ nhận số, như tax_code) có thể kéo nhầm token nhãn (label) của field khác trên cùng dòng vào giá trị (VD: tax_code bị biến từ '0313828292' thành 'mua: 0313828292', do token 'mua:' nằm liền kề, gap nhỏ). Thêm điều kiện dừng: không mở rộng qua token kết thúc bằng dấu : - trong toàn bộ dữ liệu quan sát, token dạng này luôn là phần còn lại của 1 nhãn, không bao giờ là giá trị thật.
+
+Rủi ro còn lại (chưa loại bỏ hoàn toàn): nếu 1 dòng có 2 field liền kề mà nhãn field thứ 2 KHÔNG kết thúc bằng : (khác quy ước đã quan sát), merge vẫn có thể tràn sang field kế bên. Đây là giới hạn cố hữu của gap-based clustering (đánh đổi độ đầy đủ lấy rủi ro tràn), không phải lỗi implementation - cần thêm dữ liệu hóa đơn thật đa dạng hơn để đánh giá tần suất rủi ro này.
+
+Confirmed trong implementation: core/template_matcher.py::TemplateMatcher._select_best_value(), TemplateMatcher._merge_same_line().
+
+------------------------------------------------------------------------
+
+ADR-045 --- Section-Scoped Key Matching Giải Quyết Va Chạm key_tokens Giữa Các Khối Tài Liệu
+
+Status: Accepted
+
+Giải quyết 2 Known Limitation phát hiện qua kiểm thử thực nghiệm trên PDF thật, cùng chung 1 gốc rễ: TemplateMatcher._find_key_match() tìm kiếm toàn cục, phẳng trên mọi phrase của tài liệu, không có khái niệm "khối"/ "ngữ cảnh" để giới hạn phạm vi tìm.
+
+tax_code bị lấy nhầm MST bên mua: key "ma so thue" khớp cụm "Mã số thuế" tách từ dòng "Mã số thuế mua:" (ratio 100 tuyệt đối, do không dính dấu :) thay vì cụm đúng "Mã số thuế:" của bên bán (ratio 95.24, dính dấu :).
+invoice_date phụ thuộc may rủi thứ tự: key "ngay" khớp 3 vị trí (ngày lập + 2 ngày ký số cuối trang) với ratio bằng nhau tuyệt đối; chỉ đúng nhờ _find_key_match cập nhật theo > (không phải >=) nên cụm xuất hiện trước trong tài liệu thắng - không phải cơ chế phân biệt thật sự.
+Thiết kế đã chọn
+
+Trong 4 cách thảo luận (Block/Section, Parent Key, Anchor, Relative Position), chọn Section/Block:
+
+Thêm SectionDefinition (core/models.py): section_id, key_tokens (None = khối ảo bắt đầu từ đỉnh trang, không cần marker thật - dùng cho phần đầu tài liệu chưa có section header rõ ràng), fuzzy_threshold.
+FieldDefinition thêm field bắt buộc section: str (không có default) - quyết định trong thảo luận: không cho phép field bỏ trống section, đổi lại phải cập nhật MỌI template JSON hiện có.
+TemplateDefinition thêm sections: tuple[SectionDefinition, ...], tự validate mọi field.section phải khớp 1 section_id đã khai (__post_init__, raise ValueError nếu không khớp - được TemplateLoader bắt và xử lý fail-soft per file như mọi lỗi schema khác, ADR-031).
+Section header tự nó dùng cơ chế tie-margin riêng (TemplateMatching.SECTION_TIE_MARGIN = 10, thang 0-100 của rapidfuzz.fuzz.ratio(), khác thang với TEMPLATE_TIE_MARGIN 0-1) - quyết định trong thảo luận: section header cần chống va chạm chặt hơn field thường (field thường vẫn giữ best-match tuyệt đối, không đổi).
+_find_key_match() được refactor tách khỏi FieldDefinition, nhận trực tiếp key_tokens/fuzzy_threshold/tie_margin (mặc định None) - dùng chung cho cả Field (tie_margin=None, hành vi cũ không đổi) và Section (tie_margin bắt buộc).
+Thuật toán resolve: match từng section header trên toàn bộ phrase của tài liệu, sắp theo (page_index, y_center) tăng dần, dựng khoảng [bắt đầu section, bắt đầu section kế tiếp). Field thuộc section nào chỉ được tìm key_tokens trong đúng khoảng đó.
+Section không resolve được (ambiguous do tie_margin, hoặc không tìm thấy) khiến mọi field thuộc section đó coi như "không tìm được" cho template này - đối xứng nguyên tắc "UNKNOWN là absence of decision" (ADR-027), không raise, không crash.
+Lợi ích phát hiện thêm khi thực nghiệm
+
+Section giải quyết cả 2 vấn đề bằng đúng 1 cơ chế (đúng nhận định ban đầu: "cùng gốc rễ"). Ngoài ra, buyer_tax_code giờ dùng lại được đúng key_tokens=["ma so thue"] giống hệt tax_code (chỉ khác section) - không cần key dài "ma so thue mua" riêng như thiết kế tạm thời trước đó, đơn giản hóa template.
+
+Rủi ro còn lại
+Section header tự nó vẫn có thể va chạm về mặt lý thuyết nếu 2 section dùng key_tokens gần giống nhau - Section giảm đáng kể diện va chạm (header thường dài/đặc trưng hơn field key) nhưng không loại bỏ hoàn toàn lớp vấn đề.
+MAX_KEY_WORDS = 4 giới hạn độ dài cụm sinh ra khi Key Matching (kể cả cho Section) - phát hiện qua thực nghiệm: section header 5 từ ("THÔNG TIN NGƯỜI MUA HÀNG:") không bao giờ đạt ratio 100 vì candidate phrase dài nhất chỉ 4 từ; phải chọn key_tokens ngắn hơn ("thong tin nguoi mua", 4 từ) để tránh fail tie-margin. Cần ghi chú vào tài liệu hướng dẫn viết Template (còn thiếu, xem PROJECT_CONTEXT.md §14).
+SECTION_TIE_MARGIN = 10 là giá trị placeholder ban đầu, cùng loại với các hằng số khác trong TemplateMatching - cần tinh chỉnh khi có nhiều mẫu hóa đơn thật hơn.
+
+Confirmed trong implementation: core/models.py::SectionDefinition, FieldDefinition.section, TemplateDefinition.sections; core/template_matcher.py::TemplateMatcher._find_key_match(), _resolve_sections(), _filter_phrases_by_range(), _score_template(); core/template_loader.py::TemplateLoader._build_section(); core/constants.py::TemplateMatching.SECTION_TIE_MARGIN.
+
+Verify: toàn bộ 12/12 field của sample_invoice_v1.json (v3) ra đúng kết quả trên HD2026-0003_digital.pdf thật, bao gồm tax_code ('0104101075', đúng MST bên bán) và invoice_date (đảm bảo, không còn phụ thuộc thứ tự - xác nhận trong phạm vi section "header" chỉ còn đúng 1 candidate khớp "ngày").

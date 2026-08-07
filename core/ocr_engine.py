@@ -7,7 +7,6 @@ Extractor requires no change.
 """
 
 from __future__ import annotations
-
 from core.models import PageImage
 
 

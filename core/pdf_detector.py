@@ -1,7 +1,6 @@
 """Deterministic, explainable analysis of a :class:`PDFDocument`."""
 
 from __future__ import annotations
-
 from hashlib import sha256
 from json import dumps
 from collections.abc import Iterable

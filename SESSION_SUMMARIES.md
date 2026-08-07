@@ -946,3 +946,88 @@ implement xong, toàn bộ 8 bước được kiểm chứng lại trên source 
 thật (không phải chỉ trên code đề xuất trong chat) — xác nhận source
 khớp 100% với thiết kế đã thống nhất, không có sai lệch nào phát sinh
 trong quá trình người dùng tự áp dụng code.
+
+---
+
+Session 2026-08-07
+Objective
+
+Xây dựng resources/excel_mapping.json và resources/templates/sample_invoice_v1.json dựa trên data thử nghiệm thật, theo đúng kế hoạch 5 bước đã thống nhất ở Session 2026-08-03 (PROJECT_CONTEXT.md §15). Người dùng cung cấp PDF hóa đơn thật (HD2026-0003_digital.pdf, PDF Digital) để đối chiếu trực tiếp thay vì chỉnh sửa dựa trên suy đoán.
+
+Completed
+excel_mapping.json
+Thảo luận thêm trường sheet - rút lại sau khi phân tích ExcelWriter._find_table() (đã duyệt toàn bộ sheet, Excel tự đảm bảo tên Table duy nhất trong workbook → sheet dư thừa). Xem ADR-042.
+Tạo mới resources/EXCEL_MAPPING_GUIDE.md - hướng dẫn viết excel_mapping.json cho người điều hành không biết lập trình.
+Kiểm thử thực nghiệm sample_invoice_v1.json trên PDF thật
+
+Toàn bộ phần việc dưới đây dựng lại các module liên quan (pdf_reader.py, extractor.py, template_matcher.py, value_converter.py) trong sandbox, chạy thật trên HD2026-0003_digital.pdf sau mỗi thay đổi - không suy đoán tĩnh.
+
+Vòng 1 - Đối chiếu tĩnh với text PDF: phát hiện 5 lỗi rõ ràng trong template gốc (company_name key_tokens sai, invoice_number value_pattern không cho chữ+gạch ngang, invoice_date key_tokens sai, total_amount direction sai "Below" thay vì "Right", vat_rate value_pattern không cho %).
+
+Vòng 2 - Chạy thật, phát hiện thêm 3 vấn đề mới (không thấy được qua review tĩnh):
+
+axis_tolerance mặc định (0.02-0.05) quá lớn so với khoảng cách dòng thật (~0.0168-0.0202) - window tràn dòng liền kề.
+max_distance của field tiền tệ quá nhỏ so với khoảng cách nhãn-giá trị thật (label sát trái, số tiền căn phải).
+Định dạng số của PDF test dùng dấu phẩy ngăn nghìn, ngược mặc định VN trong value_converter.py - xác nhận là quirk của data test (người dùng xác nhận), không đổi mặc định toàn cục, chỉ override decimal_format riêng cho template này.
+
+Vòng 3 - Phát hiện 3 vấn đề cần sửa code (Nhóm 3), tạm hoãn:
+
+3.1: tax_code bị lấy nhầm MST bên mua (va chạm Key Matching).
+3.2: invoice_date phụ thuộc may rủi thứ tự xuất hiện để thắng tie giữa 3 vị trí khớp cùng ratio.
+3.3: Value Matching chỉ lấy 1 WordToken - field nhiều từ bị cắt cụt (giới hạn đã biết từ Session 2026-08-01/02, nay ảnh hưởng thêm 3 field mới người dùng yêu cầu bổ sung: address, buyer_name, payment_method).
+
+Người dùng quyết định: (1) patch value_converter.py cho % ngay, (2) mở rộng thêm 4 field mới dù biết sẽ cắt cụt tạm thời, (3) xử lý Nhóm 3 trước khi tiếp tục.
+
+Giải quyết 3.3 - Value Matching nhiều từ
+
+Thảo luận 3 hướng thiết kế (gap-based / cả dòng trong window / dùng vị trí key field khác làm ranh giới) - chọn gap-based, chỉ áp dụng field Text. Implement TemplateMatcher._merge_same_line(), verify phát hiện thêm 1 hệ quả phụ (merge kéo nhầm token nhãn 'mua:' vào giá trị tax_code) → thêm điều kiện dừng ở token kết thúc :. Verify lại: 4 field trước đó bị cắt cụt nay ra đúng giá trị đầy đủ. Xem ADR-044.
+
+Giải quyết 3.1 + 3.2 - Section-Scoped Key Matching
+
+Người dùng nhận định 2 vấn đề cùng gốc rễ (thiếu ngữ cảnh khi Key Matching), đề xuất 2 hướng khái niệm (Context+Key→Value, Section+Key→Value) và 4 cách triển khai (Block/Section, Parent Key, Anchor, Relative Position). Sau khi phân tích ưu/nhược từng cách (Section mạnh nhất, giải quyết tận gốc; Parent Key là biến thể yếu hơn của Section; Anchor chỉ là cơ chế mềm/tie-break; Relative Position brittleness cao, trói field vào tọa độ tuyệt đối, đi ngược triết lý spatial_relation tương đối theo Key), người dùng chọn Section, kèm 3 quyết định thiết kế: section header dùng tie-margin riêng (SECTION_TIE_MARGIN), field bắt buộc khai section (không cho phép bỏ trống), áp dụng luôn vào sample_invoice_v1.json trong phiên này.
+
+Implement: SectionDefinition mới, FieldDefinition.section bắt buộc, TemplateDefinition.sections + validate, refactor TemplateMatcher._find_key_match() dùng chung Field/Section, thêm _resolve_sections()/_filter_phrases_by_range(), sửa _score_template(). Phát hiện thêm trong lúc chọn key_tokens cho section "buyer": header 5 từ ("THÔNG TIN NGƯỜI MUA HÀNG:") vượt MAX_KEY_WORDS=4, không bao giờ đạt ratio 100 - phải chọn key 4 từ ("thong tin nguoi mua") để qua được tie-margin.
+
+Verify: 12/12 field ra đúng giá trị, bao gồm tax_code (đúng MST bên bán) và invoice_date (xác nhận đảm bảo, không còn may rủi - chỉ còn 1 candidate trong phạm vi section "header"). Bonus phát hiện: buyer_tax_code dùng lại được key_tokens giống hệt tax_code, không cần key riêng biệt như thiết kế tạm trước đó. Xem ADR-045.
+
+Lỗi phát sinh trong lúc người dùng áp dụng patch
+
+Bộ patch đầu tiên cho Section (models_patch.md, template_matcher_section_patch.md, template_loader_patch.md) bị thiếu patch cho core/constants.py (TemplateMatching.SECTION_TIE_MARGIN đã dùng trong sandbox lúc test nhưng quên đưa vào patch xuất cho người dùng). Người dùng phát hiện qua review trước khi áp dụng. Bổ sung constants_patch.md ngay sau đó, người dùng xác nhận áp dụng thành công.
+
+Architecture Decisions
+
+Xem ARCHITECTURE_DECISIONS.md ADR-042 đến ADR-045. Tóm tắt:
+
+ADR-042: Không thêm sheet vào ExcelMapping (dư thừa với cơ chế tìm Table hiện có).
+ADR-043: ValueConverter strip % cuối chuỗi trước khi convert Decimal.
+ADR-044: Value Matching ghép nhiều từ cho field Text bằng gap-based line clustering, dừng ở token kết thúc :.
+ADR-045: Section-scoped Key Matching - giới hạn phạm vi tìm key_tokens của field trong đúng khối tài liệu đã khai, giải quyết va chạm giữa các khối (bên bán/bên mua) và rủi ro tie-break theo thứ tự.
+Issues Encountered
+Thiếu sót khi xuất patch
+
+Đã mô tả ở mục Completed ("Lỗi phát sinh trong lúc người dùng áp dụng patch"). Nguyên nhân: thay đổi trong sandbox (core/constants.py) không được đối chiếu lại đầy đủ với danh sách file patch xuất ra cho người dùng. Bài học: cần liệt kê tường minh MỌI file đã sửa trong sandbox trước khi xuất patch, không chỉ các file "chính" của thay đổi.
+
+MAX_KEY_WORDS giới hạn độ dài section header
+
+Đã mô tả ở mục Completed. Phát hiện qua thực nghiệm khi chọn key_tokens cho section "buyer" - không phải suy đoán trước. Cần đưa vào tài liệu hướng dẫn viết Template (còn thiếu) như 1 ràng buộc khi thiết kế section header, tương tự các "quy tắc vận hành" đã ghi từ Session 2026-08-01/02 (tránh key 1 từ, tránh value_pattern quá lỏng).
+
+Validation
+
+Toàn bộ thay đổi trong phiên này được verify bằng chạy thật (không phải review tĩnh) trên HD2026-0003_digital.pdf, dựng lại các module liên quan trong sandbox theo đúng nội dung source đã có. Kết quả cuối: sample_invoice_v1.json (v3) cho ra đúng 12/12 field so với nội dung PDF gốc. Người dùng đã áp dụng toàn bộ patch (value_converter.py, template_matcher.py x2 đợt, models.py, template_loader.py, constants.py, sample_invoice_v1.json v2 rồi v3) vào repo thật và xác nhận kết quả ổn sau mỗi đợt.
+
+Chưa verify: hành vi Section/merge trên các mẫu hóa đơn thật khác (chỉ có 1 file test trong phiên này) - rủi ro tràn của gap-based merge và va chạm section header lý thuyết vẫn còn, cần thêm dữ liệu đa dạng hơn để đánh giá đầy đủ.
+
+Next Session
+
+Theo đúng kế hoạch ban đầu của phiên này (chưa thực hiện):
+
+Hoàn thiện tính năng Report ở UI.
+Chạy thử nghiệm toàn bộ chương trình end-to-end thật (kế hoạch 5 bước, PROJECT_CONTEXT.md §15) - vẫn chưa có lượt chạy UI thật nào (Input Folder → Start → Report) qua ứng dụng thật.
+
+Việc tồn đọng khác:
+
+Viết "Template Authoring Guide" (mở từ Session 2026-08-01/02) - nay cần bổ sung quy tắc về sections/MAX_KEY_WORDS.
+Tinh chỉnh SECTION_TIE_MARGIN và các hằng số TemplateMatching.* khác khi có thêm mẫu hóa đơn thật.
+Đánh giá rủi ro tràn của gap-based Value merge trên nhiều layout hơn.
+Điều chỉnh resources/excel_mapping.json khớp workbook thật (vẫn mở từ Session 2026-08-03).
+Các việc tồn đọng dài hạn khác không đổi: processor.py vs Worker.process(), main.py vs ui/main_window.py, OCR backend thật, UIText.REPORT_PENDING dead code, Document/Graphics Rules cho PDFDetector.

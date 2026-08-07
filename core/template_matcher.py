@@ -21,16 +21,16 @@ Quy ước:
 """
 
 from __future__ import annotations
-
 import re
 import unicodedata
 from dataclasses import dataclass
 from rapidfuzz import fuzz
 from core.constants import TemplateMatching
-from core.enums import SpatialDirection
+from core.enums import SpatialDirection, ValueType
 from core.models import (
     ExtractionResult,
     FieldDefinition,
+    SectionDefinition,
     SpatialRelation,
     TemplateDefinition,
     TemplateSelection,
@@ -199,10 +199,10 @@ class TemplateMatcher:
 
         for start in range(n):
             texts = [line[start].text]
-            bbox = list(line[start].normalized_bbox)
+            x0, y0, x1, y1 = line[start].normalized_bbox
 
             phrases.append(
-                _Phrase(text=texts[0], bbox=tuple(bbox), page_index=page_index)
+                _Phrase(text=texts[0], bbox=(x0, y0, x1, y1), page_index=page_index)
             )
 
             limit = min(start + TemplateMatching.MAX_KEY_WORDS, n)
@@ -214,15 +214,16 @@ class TemplateMatcher:
                     break
 
                 texts.append(curr_token.text)
-                bbox[0] = min(bbox[0], curr_token.normalized_bbox[0])
-                bbox[1] = min(bbox[1], curr_token.normalized_bbox[1])
-                bbox[2] = max(bbox[2], curr_token.normalized_bbox[2])
-                bbox[3] = max(bbox[3], curr_token.normalized_bbox[3])
+                cx0, cy0, cx1, cy1 = curr_token.normalized_bbox
+                x0 = min(x0, cx0)
+                y0 = min(y0, cy0)
+                x1 = max(x1, cx1)
+                y1 = max(y1, cy1)
 
                 phrases.append(
                     _Phrase(
                         text=" ".join(texts),
-                        bbox=tuple(bbox),
+                        bbox=(x0, y0, x1, y1),
                         page_index=page_index,
                     )
                 )
@@ -231,26 +232,39 @@ class TemplateMatcher:
 
     @staticmethod
     def _find_key_match(
-        field_def: FieldDefinition,
-        phrases: tuple[_Phrase, ...],
+            key_tokens: tuple[str, ...],
+            fuzzy_threshold: int,
+            phrases: tuple[_Phrase, ...],
+            tie_margin: float | None = None,
     ) -> tuple[int, WordToken] | None:
         """
-        Tìm phrase khớp tốt nhất (fuzzy) với key_tokens của field.
-        Trả (page_index, WordToken đại diện mang bbox hợp nhất của cụm khớp).
+        Tìm phrase khớp tốt nhất (fuzzy) với key_tokens trong phrases đã cho.
+        Dùng chung cho cả Field (tie_margin=None - best-match tuyệt đối,
+        hành vi không đổi so với trước) và Section (tie_margin bắt buộc -
+        chống va chạm giữa các section header). Trả (page_index, WordToken
+        đại diện mang bbox hợp nhất của cụm khớp).
         """
         best_phrase: _Phrase | None = None
         best_ratio = -1.0
+        second_best_ratio = -1.0
 
         for phrase in phrases:
             phrase_normalized = _strip_diacritics(phrase.text.lower())
-            for key_text in field_def.key_tokens:
+            for key_text in key_tokens:
                 key_normalized = _strip_diacritics(key_text.lower())
                 ratio = fuzz.ratio(phrase_normalized, key_normalized)
-                if ratio >= field_def.fuzzy_threshold and ratio > best_ratio:
+                if ratio < fuzzy_threshold:
+                    continue
+                if ratio > best_ratio:
+                    second_best_ratio = best_ratio
                     best_ratio = ratio
                     best_phrase = phrase
+                elif ratio > second_best_ratio:
+                    second_best_ratio = ratio
 
         if best_phrase is None:
+            return None
+        if tie_margin is not None and best_ratio - second_best_ratio < tie_margin:
             return None
 
         representative = WordToken(
@@ -261,6 +275,52 @@ class TemplateMatcher:
         )
         return best_phrase.page_index, representative
 
+    @staticmethod
+    def _phrase_position(phrase: _Phrase) -> tuple[int, float]:
+        y_center = (phrase.bbox[1] + phrase.bbox[3]) / 2
+        return phrase.page_index, y_center
+
+    @staticmethod
+    def _resolve_sections(
+            sections: tuple[SectionDefinition, ...],
+            phrases: tuple[_Phrase, ...],
+    ) -> dict[str, tuple]:
+        """
+        Xác định vị trí bắt đầu của từng section, sau đó dựng khoảng
+        [bắt đầu, bắt đầu section kế tiếp) theo thứ tự (page, y) tăng dần.
+        Section không resolve được (ambiguous do tie_margin, hoặc không
+        tìm thấy) sẽ VẮNG MẶT trong dict trả về - field thuộc section đó
+        coi như "không tìm được" cho template này (đối xứng ADR-027).
+        """
+        starts: dict[str, tuple[int, float]] = {}
+        for section in sections:
+            if section.key_tokens is None:
+                starts[section.section_id] = (0, 0.0)
+                continue
+            match = TemplateMatcher._find_key_match(
+                section.key_tokens, section.fuzzy_threshold, phrases,
+                tie_margin=TemplateMatching.SECTION_TIE_MARGIN,
+            )
+            if match is None:
+                continue
+            page_index, token = match
+            y_center = (token.normalized_bbox[1] + token.normalized_bbox[3]) / 2
+            starts[section.section_id] = (page_index, y_center)
+
+        ordered = sorted(starts.items(), key=lambda kv: kv[1])
+        ranges: dict[str, tuple] = {}
+        for i, (section_id, start) in enumerate(ordered):
+            end = ordered[i + 1][1] if i + 1 < len(ordered) else (float("inf"), float("inf"))
+            ranges[section_id] = (start, end)
+        return ranges
+
+    @staticmethod
+    def _filter_phrases_by_range(phrases: tuple[_Phrase, ...], position_range: tuple) -> tuple:
+        start, end = position_range
+        return tuple(
+            p for p in phrases
+            if start <= TemplateMatcher._phrase_position(p) < end
+        )
     # ------------------------------------------------------------------
     # Score + Decision (đối xứng PDFDetector._decide_mode)
     # ------------------------------------------------------------------
@@ -270,12 +330,23 @@ class TemplateMatcher:
         template: TemplateDefinition,
         phrases: tuple[_Phrase, ...],
     ) -> tuple[dict[str, tuple[int, WordToken]], float]:
+        section_ranges = self._resolve_sections(template.sections, phrases)
+
         matched_keys: dict[str, tuple[int, WordToken]] = {}
         matched_weight = 0.0
         total_weight = sum(f.identification_weight for f in template.fields)
 
         for field_def in template.fields:
-            match = self._find_key_match(field_def, phrases)
+            position_range = section_ranges.get(field_def.section)
+            if position_range is None:
+                # Section của field này không resolve được cho template
+                # này -> field coi như không tìm được (ADR-027 style).
+                continue
+
+            scoped_phrases = self._filter_phrases_by_range(phrases, position_range)
+            match = self._find_key_match(
+                field_def.key_tokens, field_def.fuzzy_threshold, scoped_phrases,
+            )
             if match is not None:
                 matched_keys[field_def.field_name] = match
                 matched_weight += field_def.identification_weight
@@ -346,8 +417,62 @@ class TemplateMatcher:
         if not matches:
             return None
 
-        nearest = min(matches, key=lambda t: TemplateMatcher._distance(t, key_token))
-        return nearest.text
+        anchor = min(matches, key=lambda t: TemplateMatcher._distance(t, key_token))
+
+        if field_def.value_type is not ValueType.TEXT:
+            return anchor.text
+
+        return self._merge_same_line(anchor, candidates)
+
+    @staticmethod
+    def _merge_same_line(anchor: WordToken, candidates: list[WordToken]) -> str:
+        """
+        Ghép anchor với các token liền kề cùng dòng (Value Matching nhiều
+        từ - Known Limitation 3.3). Chỉ dùng cho field Text; tái dùng
+        LINE_Y_TOLERANCE ("cùng dòng") và WORD_GAP_TOLERANCE ("liền kề"),
+        đối xứng cơ chế đã có ở Key Matching (_cluster_lines/_cluster_phrases).
+        Dừng mở rộng khi gặp token kết thúc bằng ':' - dấu hiệu đó là nhãn
+        của field khác trên cùng dòng, không phải giá trị thật.
+        """
+        def y_center(t: WordToken) -> float:
+            return (t.normalized_bbox[1] + t.normalized_bbox[3]) / 2
+
+        anchor_y = y_center(anchor)
+        same_line = [
+            t for t in candidates
+            if abs(y_center(t) - anchor_y) <= TemplateMatching.LINE_Y_TOLERANCE
+        ]
+        same_line.sort(key=lambda t: t.normalized_bbox[0])
+
+        anchor_idx = next(
+            i for i, t in enumerate(same_line)
+            if t.normalized_bbox == anchor.normalized_bbox and t.text == anchor.text
+        )
+
+        selected = [anchor]
+
+        i = anchor_idx
+        while i + 1 < len(same_line):
+            gap = same_line[i + 1].normalized_bbox[0] - same_line[i].normalized_bbox[2]
+            if gap > TemplateMatching.WORD_GAP_TOLERANCE:
+                break
+            if same_line[i + 1].text.endswith(":"):
+                break
+            selected.append(same_line[i + 1])
+            i += 1
+
+        i = anchor_idx
+        while i - 1 >= 0:
+            gap = same_line[i].normalized_bbox[0] - same_line[i - 1].normalized_bbox[2]
+            if gap > TemplateMatching.WORD_GAP_TOLERANCE:
+                break
+            if same_line[i - 1].text.endswith(":"):
+                break
+            selected.insert(0, same_line[i - 1])
+            i -= 1
+
+        selected.sort(key=lambda t: t.normalized_bbox[0])
+        return " ".join(t.text for t in selected)
 
     @staticmethod
     def _distance(a: WordToken, b: WordToken) -> float:

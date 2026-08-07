@@ -16,10 +16,14 @@ rather than Git commits.
     SESSION_SUMMARIES.md, Session 2026-08-03, and
     PROJECT_CONTEXT.md §15 for the 5-step plan).
 -   Fix `resources/templates/sample_invoice_v1.json`'s two known
-    issues (short `key_tokens`, loose `value_pattern`) using findings
-    from the real-data run above, instead of guessing.
--   Adjust `resources/excel_mapping.json` to match a real target
-    output Excel workbook.
+    issues~~ — **Done, Session 2026-08-07** (phạm vi thực tế lớn hơn
+    nhiều so với 2 lỗi đã biết ban đầu; xem SESSION_SUMMARIES.md,
+    Session 2026-08-07, và ARCHITECTURE_DECISIONS.md ADR-043/044/045).
+-   Đã thêm `resources/EXCEL_MAPPING_GUIDE.md` (Session 2026-08-07) -
+    hướng dẫn viết `excel_mapping.json` cho người điều hành. Việc điều
+    chỉnh `excel_mapping.json` khớp workbook thật (mục trên) vẫn CHƯA
+    làm - guide chỉ giải thích cách viết, không tự động hoàn thành bước
+    này.
 -   Manually verify `core/excel_writer.py::WorkbookSaveError` against
     a real OS permission failure (could not be reproduced in the
     root-privileged test container this session).
@@ -45,6 +49,19 @@ rather than Git commits.
     a `[0, 1000]` scale adapter at the point of consumption;
     `WordToken.normalized_bbox` deliberately stays `[0.0, 1.0]` and
     model-agnostic (see ARCHITECTURE_DECISIONS.md).
+-   **Từ Session 2026-08-07:** viết "Template Authoring Guide" (đã nêu
+    từ Session 2026-08-01/02, vẫn thiếu) - nay cần bổ sung thêm cả quy
+    tắc viết `sections`/`key_tokens` cho Section (VD giới hạn
+    `MAX_KEY_WORDS=4` khi chọn section header dài) - phát hiện mới từ
+    phiên 2026-08-07 (xem ADR-045).
+-   **Từ Session 2026-08-07:** tinh chỉnh `TemplateMatching.SECTION_TIE_MARGIN`
+    (hiện là 10, placeholder) khi có nhiều mẫu hóa đơn thật hơn - cùng
+    nhóm với các hằng số `TemplateMatching.*` khác đã ghi nhận cần tinh
+    chỉnh.
+-   **Từ Session 2026-08-07:** đánh giá rủi ro tràn của cơ chế gap-based
+    Value merge (ADR-044) trên nhiều mẫu hóa đơn thật hơn - hiện chỉ
+    verify trên 1 PDF test, điều kiện dừng "token kết thúc bằng `:`"
+    chưa chắc đủ cho mọi layout.
 
 ------------------------------------------------------------------------
 
@@ -719,3 +736,140 @@ sample invoice PDFs (Input Folder → Start → Report, clicked by a
 human through the actual running application). This is the explicit
 plan for the next session (see Unreleased/Next and
 PROJECT_CONTEXT.md §15).
+
+------------------------------------------------------------------------
+
+## 2026-08-07
+
+### excel_mapping.json — Thảo luận thiết kế (không đổi schema)
+
+#### Quyết định
+
+-   Cân nhắc thêm trường `sheet` vào `ExcelMapping` để chỉ rõ Excel
+    Table nằm ở sheet nào - **rút lại đề xuất** sau khi phân tích
+    `ExcelWriter._find_table()`: hàm này đã duyệt toàn bộ sheet để tìm
+    Table theo tên, và Excel tự đảm bảo tên Table duy nhất trong toàn
+    workbook, nên `sheet` là dư thừa cho mục đích tìm kiếm (xem
+    ADR-042).
+
+#### Added
+
+-   `resources/EXCEL_MAPPING_GUIDE.md` - hướng dẫn viết `excel_mapping.json`
+    cho người điều hành (không yêu cầu biết lập trình): yêu cầu Excel
+    Table thật (không phải range), cấu trúc JSON, danh sách field hợp
+    lệ của `InvoiceInfo` kèm kiểu dữ liệu, quy tắc đặt tên cột, bảng
+    phân loại lỗi (fatal / soft-fail / warning) kèm nơi xem kết quả,
+    checklist trước khi chạy thật.
+
+### sample_invoice_v1.json — Kiểm thử thực nghiệm toàn diện trên PDF thật
+
+dùng cung cấp PDF hóa đơn thật (`HD2026-0003_digital.pdf`, PDF
+Digital). Toàn bộ phần việc dưới đây được kiểm chứng bằng cách dựng lại
+các module liên quan (`pdf_reader`, `extractor`, `template_matcher`,
+`value_converter`) trong môi trường sandbox và chạy thật trên file này,
+không suy đoán tĩnh - đúng tinh thần đã thiết lập từ các phiên trước.
+
+#### Fixed (lỗi rõ ràng, đối chiếu trực tiếp với text PDF thật)
+
+-   `company_name`: `key_tokens` sai (`"ten don vi ban"` → PDF thật ghi
+    "Tên công ty:") → sửa thành `["ten cong ty"]`.
+-   `invoice_number`: `value_pattern` chỉ cho số thuần, số hóa đơn thật
+    có chữ + gạch ngang (`"HD2026-0003"`) → sửa pattern.
+-   `invoice_date`: `key_tokens` sai (`"ngay lap hoa don"` → PDF chỉ ghi
+    "Ngày:") → sửa thành `["ngay"]`.
+-   `total_amount`: `spatial_relation.direction` sai (`"Below"` → giá
+    trị thật nằm cùng dòng bên phải) → sửa thành `"Right"`.
+-   `vat_rate`: `value_pattern` không cho phép `%` (giá trị thật dính
+    liền `"5%"`) → sửa pattern + patch `value_converter.py` (xem dưới).
+
+#### Fixed (phát hiện mới qua thực nghiệm, không thấy được nếu chỉ review tĩnh)
+
+-   `axis_tolerance` mặc định (0.02-0.05) quá lớn so với khoảng cách
+    dòng thật đo được trên PDF (~0.0168-0.0202) → window "Right"/"Below"
+    tràn sang dòng liền kề (VD `buyer_name` từng ra `'mua:'` sai dòng).
+    Hạ đồng loạt xuống `0.006`.
+-   `max_distance` của 4 field tiền tệ quá nhỏ (0.1-0.2) so với khoảng
+    cách thật giữa nhãn (sát lề trái) và số tiền (căn phải, x≈0.78-0.92)
+    → field ra `None`. Tăng lên `0.85`.
+-   Định dạng số của riêng file PDF test dùng dấu phẩy ngăn hàng nghìn
+    (`"19,188,159"`), ngược mặc định VN (`.` ngăn nghìn) trong
+    `value_converter.py`. Xác nhận đây là quirk của data test (không
+    đại diện hóa đơn VN thật) - khai `decimal_format` override riêng
+    cho 3 field tiền tệ trong `sample_invoice_v1.json`, KHÔNG đổi mặc
+    định toàn cục.
+
+#### Added — `core/value_converter.py`
+
+-   `_to_decimal()` strip ký tự `%` cuối chuỗi trước khi parse `Decimal`
+    (xem ADR-043).
+
+#### Added — `core/template_matcher.py` (Value Matching nhiều từ)
+
+-   `_select_best_value()` + `_merge_same_line()` mới: ghép nhiều
+    `WordToken` liền kề cùng dòng thành 1 giá trị cho field `Text`
+    (gap-based, tái dùng `LINE_Y_TOLERANCE`/`WORD_GAP_TOLERANCE`), dừng
+    mở rộng khi gặp token kết thúc bằng `:` (xem ADR-044). Giải quyết
+    triệt để giới hạn "chỉ lấy 1 WordToken" đã ghi từ Session
+    2026-08-01/02.
+
+#### Added — Section (giải quyết va chạm key_tokens giữa các khối tài liệu)
+
+-   `core/models.py`: `SectionDefinition` mới; `FieldDefinition` thêm
+    field bắt buộc `section: str`; `TemplateDefinition` thêm `sections`
+    kèm validate `field.section` phải khớp 1 `section_id` đã khai.
+-   `core/template_matcher.py`: `_find_key_match()` refactor tách khỏi
+    `FieldDefinition`, nhận `key_tokens`/`fuzzy_threshold`/`tie_margin`
+    trực tiếp - dùng chung cho Field (tie_margin=None, hành vi cũ không
+    đổi) và Section (tie_margin bắt buộc). Thêm `_resolve_sections()`,
+    `_filter_phrases_by_range()`. `_score_template()` nay giới hạn
+    phạm vi Key Matching của mỗi field trong đúng section đã khai.
+-   `core/template_loader.py`: parse `sections` + `field.section` từ
+    JSON (`_build_section()` mới, `_build_field()` thêm `section`).
+-   `core/constants.py`: thêm `TemplateMatching.SECTION_TIE_MARGIN = 10`
+    (thang 0-100 của `rapidfuzz.fuzz.ratio()`, khác thang với
+    `TEMPLATE_TIE_MARGIN`).
+-   Giải quyết 2 Known Limitation cùng gốc rễ (xem ADR-045):
+    -   `tax_code` từng bị lấy nhầm MST bên mua (va chạm key ở tầng
+        Key Matching toàn cục).
+    -   `invoice_date` từng phụ thuộc may rủi thứ tự xuất hiện trong
+        tài liệu để thắng tie giữa 3 vị trí khớp cùng ratio.
+
+#### sample_invoice_v1.json — version 2 → 3
+
+-   Thêm 4 field mới: `address`, `buyer_name`, `buyer_tax_code`,
+    `payment_method` (field đã tồn tại sẵn trong `InvoiceInfo`, trước
+    đó chưa được khai trong template).
+-   Thêm `sections`: `header` (khối ảo từ đỉnh trang, không cần marker),
+    `seller` (key "don vi ban hang"), `buyer` (key "thong tin nguoi
+    mua" - CHÚ Ý: không phải 5 từ đầy đủ "thong tin nguoi mua hang", vì
+    vượt `MAX_KEY_WORDS=4`, xem ADR-045), `detail` (key "chi tiet thanh
+    toan"). Mỗi field gán đúng 1 `section`.
+-   `buyer_tax_code` nay dùng lại đúng `key_tokens=["ma so thue"]` giống
+    `tax_code` (trước đó cần `key_tokens=["ma so thue mua"]` riêng để
+    né va chạm) - đơn giản hóa nhờ Section tự phân biệt theo khối.
+
+#### Testing (phiên này)
+
+Toàn bộ thay đổi trên được verify bằng chạy thật, không phải review
+tĩnh, trên `HD2026-0003_digital.pdf`: dựng lại `PDFReader`, `Extractor`
+(Digital path), `TemplateMatcher`, `ValueConverter` trong sandbox, chạy
+`select_template()` + `extract_fields()` + `ValueConverter.convert()`
+đầy đủ. Kết quả cuối: **12/12 field ra đúng giá trị** so với nội dung
+PDF gốc.
+
+#### Known Limitations còn lại (chưa xử lý, ghi nhận rõ để phiên sau)
+
+-   Gap-based Value merge (ADR-044) có thể tràn sang field khác nếu
+    nhãn liền kề KHÔNG kết thúc bằng dấu `:` - chưa gặp trên data thật
+    hiện có, nhưng là giới hạn cố hữu chưa loại bỏ hoàn toàn.
+-   Section header (ADR-045) vẫn có thể va chạm về lý thuyết nếu 2
+    section dùng `key_tokens` gần giống nhau - rủi ro giảm mạnh nhưng
+    không bằng 0.
+-   `SECTION_TIE_MARGIN = 10` là placeholder, cần tinh chỉnh khi có
+    thêm mẫu hóa đơn thật.
+-   `FieldDefinition.section` nay là bắt buộc - MỌI template JSON khác
+    ngoài `sample_invoice_v1.json` (nếu phát sinh sau này) đều phải
+    khai `section`, nếu không sẽ bị `TemplateLoader` skip fail-soft
+    (thiếu key → `KeyError`, xử lý như lỗi schema khác theo ADR-031).
+
+------------------------------------------------------------------------

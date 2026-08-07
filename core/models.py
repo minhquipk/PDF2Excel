@@ -361,9 +361,30 @@ class SpatialRelation:
 
 
 @dataclass(slots=True, frozen=True)
+class SectionDefinition:
+    """
+    Định nghĩa 1 khối (section) trong tài liệu - dùng để giới hạn phạm vi
+    Key Matching của field, giải quyết va chạm key_tokens giữa các khối
+    khác nhau (VD: 'Mã số thuế' của bên bán vs bên mua - Known Limitation
+    3.1/3.2, xem ARCHITECTURE_DECISIONS.md ADR mới).
+    key_tokens=None đại diện 1 khối "ảo" bắt đầu từ đỉnh trang đầu tiên
+    (không cần marker thật) - dùng cho phần đầu tài liệu chưa có section
+    header rõ ràng (VD: số/ngày hóa đơn trước khối "ĐƠN VỊ BÁN HÀNG").
+    """
+    section_id: str
+    key_tokens: tuple[str, ...] | None = None
+    fuzzy_threshold: int = 85
+
+    def __post_init__(self) -> None:
+        if self.key_tokens is not None:
+            object.__setattr__(self, "key_tokens", _freeze_value(self.key_tokens))
+
+
+@dataclass(slots=True, frozen=True)
 class FieldDefinition:
     """Định nghĩa cách trích một field của InvoiceInfo từ WordToken."""
     field_name: str
+    section: str
     value_type: ValueType
     identification_weight: float
     key_tokens: tuple[str, ...]
@@ -388,14 +409,24 @@ class FieldDefinition:
 
 @dataclass(slots=True, frozen=True)
 class TemplateDefinition:
-    """Một mẫu hóa đơn: tập hợp FieldDefinition + metadata."""
     template_id: str
     version: int
     description: str
     fields: tuple[FieldDefinition, ...]
+    sections: tuple[SectionDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "fields", _freeze_value(self.fields))
+        object.__setattr__(self, "sections", _freeze_value(self.sections))
+
+        valid_section_ids = {s.section_id for s in self.sections}
+        for field_def in self.fields:
+            if field_def.section not in valid_section_ids:
+                raise ValueError(
+                    f"Field '{field_def.field_name}' khai section='{field_def.section}' "
+                    f"không tồn tại trong 'sections' của template '{self.template_id}'. "
+                    f"Section hợp lệ: {sorted(valid_section_ids)}."
+                )
 
 
 @dataclass(slots=True, frozen=True)

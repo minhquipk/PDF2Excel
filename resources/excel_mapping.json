@@ -1,13 +1,17 @@
 {
-  "table": "tblInvoices",
+  "table": "Table1",
   "columns": {
-    "Invoice No": "invoice_number",
-    "Date": "invoice_date",
-    "Supplier": "company_name",
-    "Tax Code": "tax_code",
-    "Amount": "subtotal",
-    "VAT Rate": "vat_rate",
-    "VAT Amount": "vat_amount",
-    "Total": "total_amount"
+    "SỐ HÓA ĐƠN": "invoice_number",
+    "NGÀY XUẤT HĐ": "invoice_date",
+    "TÊN CÔNG TY": "company_name",
+    "MÃ SỐ THUẾ": "tax_code",
+    "CỘNG TIỀN HÀNG (CHƯA THUẾ)": "subtotal",
+    "THUẾ SUẤT (VAT)": "vat_rate",
+    "TIỀN THUẾ": "vat_amount",
+    "ĐỊA CHỈ": "address",
+    "ĐƠN VỊ MUA": "buyer_name",
+    "MÃ SỐ THUẾ MUA": "buyer_tax_code",
+    "HÌNH THỨC THANH TOÁN": "payment_method",
+    "TỔNG TIỀN THANH TOÁN": "total_amount"
   }
 }

@@ -9,11 +9,9 @@ Quy ước:
 """
 
 from __future__ import annotations
-
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
-
 from core.enums import ValueType
 from core.models import FieldDefinition
 
@@ -61,6 +59,15 @@ class ValueConverter:
 
         normalized = raw_text.strip()
 
+        # Khi chuỗi có ký hiệu phần trăm cuối chuỗi (VD field vat_rate: "5%"),
+        # chuyển đổi giá trị về dạng đại số thực sự bằng cách chia cho 100
+        # ("5%" -> Decimal("0.05")), giúp dữ liệu trong InvoiceInfo chuẩn xác
+        # và tương thích tự nhiên với định dạng Percentage của Excel.
+        is_percentage = False
+        if normalized.endswith("%"):
+            normalized = normalized[:-1].strip()
+            is_percentage = True
+
         if thousand_sep:
             normalized = normalized.replace(thousand_sep, "")
 
@@ -68,7 +75,8 @@ class ValueConverter:
             normalized = normalized.replace(decimal_sep, ".")
 
         try:
-            return Decimal(normalized)
+            value = Decimal(normalized)
+            return value / Decimal("100") if is_percentage else value
         except InvalidOperation:
             return None
 

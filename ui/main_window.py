@@ -33,6 +33,7 @@ class MainWindow(QMainWindow):
         self._worker = Worker()
         self._worker.moveToThread(self._thread)
         self._table_model = ProcessingTableModel()
+        self._has_error = False
 
         self.setWindowTitle(UIText.TITLE)
         self.resize(Window.WIDTH, Window.HEIGHT)
@@ -95,7 +96,7 @@ class MainWindow(QMainWindow):
         self._worker.progress.connect(self.on_worker_progress)
         self._worker.finished.connect(self.on_worker_finished)
         self._worker.finished.connect(self._thread.quit)
-        self._worker.cancelled.connect(self.on_worker_finished)
+        self._worker.cancelled.connect(self.on_worker_cancelled)
         self._worker.cancelled.connect(self._thread.quit)
         self._worker.file_processed.connect(self._table_model.append)
         self._worker.error.connect(self.on_worker_error)
@@ -156,6 +157,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._has_error = False
         self._table_model.clear()
         self._set_running(True)
         self._worker.configure(
@@ -193,6 +195,11 @@ class MainWindow(QMainWindow):
 
     def on_worker_finished(self) -> None:
         self._set_running(False)
+        if not self._has_error:
+            self._report()
+
+    def on_worker_cancelled(self) -> None:
+        self._set_running(False)
 
     def on_worker_progress(
         self,
@@ -209,6 +216,7 @@ class MainWindow(QMainWindow):
         )
 
     def on_worker_error(self, message: str) -> None:
+        self._has_error = True
         QMessageBox.warning(
             self,
             UIText.ERROR_TITLE,

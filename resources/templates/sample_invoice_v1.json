@@ -1,127 +1,208 @@
 {
   "template_id": "sample_invoice_v1",
-  "version": 1,
-  "description": "Template mau de chay thu Parser. SUA LAI SO LIEU khi co du lieu PDF that.",
+  "version": 3,
+  "description": "Da verify bang thuc nghiem tren HD2026-0003_digital.pdf. Ap dung co che Section (giai quyet Known Limitation 3.1 - va cham tax_code/buyer_tax_code, va 3.2 - rui ro tie-break invoice_date) va merge nhieu tu cho Value Matching (3.3 - da xu ly o phien truoc). Yeu cau core/models.py, core/template_matcher.py, core/template_loader.py da ap dung day du cac patch tuong ung.",
+  "sections": [
+    {
+      "section_id": "header",
+      "key_tokens": null
+    },
+    {
+      "section_id": "seller",
+      "key_tokens": ["don vi ban hang"],
+      "fuzzy_threshold": 85
+    },
+    {
+      "section_id": "buyer",
+      "key_tokens": ["thong tin nguoi mua"],
+      "fuzzy_threshold": 85
+    },
+    {
+      "section_id": "detail",
+      "key_tokens": ["chi tiet thanh toan"],
+      "fuzzy_threshold": 85
+    }
+  ],
   "fields": [
     {
       "field_name": "company_name",
+      "section": "seller",
       "value_type": "Text",
       "identification_weight": 0.5,
-      "key_tokens": ["ten don vi ban", "don vi ban hang"],
+      "key_tokens": ["ten cong ty"],
       "fuzzy_threshold": 85,
       "spatial_relation": {
         "direction": "Right",
-        "max_distance": 0.3,
-        "axis_tolerance": 0.02
+        "max_distance": 0.6,
+        "axis_tolerance": 0.006
       },
       "value_pattern": ".+"
     },
     {
       "field_name": "tax_code",
+      "section": "seller",
       "value_type": "Text",
       "identification_weight": 1.0,
-      "key_tokens": ["ma so thue", "mst"],
+      "key_tokens": ["ma so thue"],
       "fuzzy_threshold": 90,
       "spatial_relation": {
         "direction": "Right",
         "max_distance": 0.15,
-        "axis_tolerance": 0.02
+        "axis_tolerance": 0.006
       },
       "value_pattern": "^[0-9]{10,14}(-[0-9]{3})?$"
     },
     {
-      "field_name": "invoice_number",
+      "field_name": "address",
+      "section": "seller",
       "value_type": "Text",
-      "identification_weight": 0.2,
-      "key_tokens": ["so hoa don", "so"],
+      "identification_weight": 0.0,
+      "key_tokens": ["dia chi"],
       "fuzzy_threshold": 85,
       "spatial_relation": {
         "direction": "Right",
-        "max_distance": 0.15,
-        "axis_tolerance": 0.02
+        "max_distance": 0.6,
+        "axis_tolerance": 0.006
       },
-      "value_pattern": "^[0-9]{1,8}$"
+      "value_pattern": ".+"
     },
     {
-      "field_name": "invoice_date",
-      "value_type": "Date",
+      "field_name": "buyer_name",
+      "section": "buyer",
+      "value_type": "Text",
       "identification_weight": 0.0,
-      "key_tokens": ["ngay lap hoa don", "ngay lap"],
+      "key_tokens": ["don vi mua"],
+      "fuzzy_threshold": 85,
+      "spatial_relation": {
+        "direction": "Right",
+        "max_distance": 0.6,
+        "axis_tolerance": 0.006
+      },
+      "value_pattern": ".+"
+    },
+    {
+      "field_name": "buyer_tax_code",
+      "section": "buyer",
+      "value_type": "Text",
+      "identification_weight": 0.0,
+      "key_tokens": ["ma so thue"],
+      "fuzzy_threshold": 90,
+      "spatial_relation": {
+        "direction": "Right",
+        "max_distance": 0.15,
+        "axis_tolerance": 0.006
+      },
+      "value_pattern": "^[0-9]{10,14}(-[0-9]{3})?$"
+    },
+    {
+      "field_name": "payment_method",
+      "section": "buyer",
+      "value_type": "Text",
+      "identification_weight": 0.0,
+      "key_tokens": ["hinh thuc thanh toan"],
       "fuzzy_threshold": 85,
       "spatial_relation": {
         "direction": "Right",
         "max_distance": 0.2,
-        "axis_tolerance": 0.02
+        "axis_tolerance": 0.006
+      },
+      "value_pattern": ".+"
+    },
+    {
+      "field_name": "invoice_number",
+      "section": "header",
+      "value_type": "Text",
+      "identification_weight": 0.2,
+      "key_tokens": ["so hoa don"],
+      "fuzzy_threshold": 85,
+      "spatial_relation": {
+        "direction": "Right",
+        "max_distance": 0.15,
+        "axis_tolerance": 0.006
+      },
+      "value_pattern": "^[A-Za-z0-9\\-]+$"
+    },
+    {
+      "field_name": "invoice_date",
+      "section": "header",
+      "value_type": "Date",
+      "identification_weight": 0.0,
+      "key_tokens": ["ngay"],
+      "fuzzy_threshold": 85,
+      "spatial_relation": {
+        "direction": "Right",
+        "max_distance": 0.2,
+        "axis_tolerance": 0.006
       },
       "value_pattern": "\\d{1,2}/\\d{1,2}/\\d{4}",
       "date_format": "%d/%m/%Y"
     },
     {
       "field_name": "subtotal",
+      "section": "detail",
       "value_type": "Decimal",
       "identification_weight": 0.0,
       "key_tokens": ["cong tien hang"],
       "fuzzy_threshold": 85,
       "spatial_relation": {
         "direction": "Right",
-        "max_distance": 0.2,
-        "axis_tolerance": 0.03
+        "max_distance": 0.85,
+        "axis_tolerance": 0.006
       },
       "value_pattern": "^[0-9.,]+$",
       "decimal_format": {
-        "thousand_separator": ".",
-        "decimal_separator": ","
+        "thousand_separator": ",",
+        "decimal_separator": "."
       }
     },
     {
       "field_name": "vat_rate",
+      "section": "detail",
       "value_type": "Decimal",
       "identification_weight": 0.0,
-      "key_tokens": ["thue suat gtgt", "thue suat"],
+      "key_tokens": ["thue suat gtgt"],
       "fuzzy_threshold": 85,
       "spatial_relation": {
         "direction": "Right",
-        "max_distance": 0.15,
-        "axis_tolerance": 0.02
+        "max_distance": 0.85,
+        "axis_tolerance": 0.006
       },
-      "value_pattern": "^[0-9]{1,2}$",
-      "decimal_format": {
-        "thousand_separator": ".",
-        "decimal_separator": ","
-      }
+      "value_pattern": "^[0-9]{1,2}%?$"
     },
     {
       "field_name": "vat_amount",
+      "section": "detail",
       "value_type": "Decimal",
       "identification_weight": 0.0,
       "key_tokens": ["tien thue gtgt"],
       "fuzzy_threshold": 85,
       "spatial_relation": {
         "direction": "Right",
-        "max_distance": 0.2,
-        "axis_tolerance": 0.03
+        "max_distance": 0.85,
+        "axis_tolerance": 0.006
       },
       "value_pattern": "^[0-9.,]+$",
       "decimal_format": {
-        "thousand_separator": ".",
-        "decimal_separator": ","
+        "thousand_separator": ",",
+        "decimal_separator": "."
       }
     },
     {
       "field_name": "total_amount",
+      "section": "detail",
       "value_type": "Decimal",
       "identification_weight": 0.0,
-      "key_tokens": ["tong cong tien thanh toan", "tong tien thanh toan"],
+      "key_tokens": ["tong tien thanh toan"],
       "fuzzy_threshold": 85,
       "spatial_relation": {
-        "direction": "Below",
-        "max_distance": 0.1,
-        "axis_tolerance": 0.05
+        "direction": "Right",
+        "max_distance": 0.85,
+        "axis_tolerance": 0.006
       },
       "value_pattern": "^[0-9.,]+$",
       "decimal_format": {
-        "thousand_separator": ".",
-        "decimal_separator": ","
+        "thousand_separator": ",",
+        "decimal_separator": "."
       }
     }
   ]

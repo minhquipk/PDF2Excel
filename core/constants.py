@@ -131,7 +131,6 @@ class UIText:
 class TemplateMatching:
     """
     Cấu hình cho TemplateMatcher (Parser).
-
     Toàn bộ giá trị dưới đây là ước lượng ban đầu (placeholder), CẦN TINH
     CHỈNH LẠI sau khi có dữ liệu PDF hóa đơn thật. Xem SESSION_SUMMARIES.md
     - ghi chú "cần thảo luận thêm sau khi Parser chạy thử nghiệm".
@@ -158,3 +157,8 @@ class TemplateMatching:
     # Điểm match_score tối thiểu để 1 template được coi là ứng viên hợp lệ,
     # kể cả khi nó dẫn đầu và không bị tie với template thứ 2.
     TEMPLATE_MIN_SCORE = 0.5
+    # Độ chênh lệch ratio (thang 0-100 của rapidfuzz) tối thiểu giữa section
+    # header khớp tốt nhất và tốt nhì để coi là "xác định được rõ ràng".
+    # Áp dụng RIÊNG cho Section (field thường không có cơ chế này) - quyết
+    # định trong phiên thảo luận Nhóm 3.1/3.2 (Section).
+    SECTION_TIE_MARGIN = 10

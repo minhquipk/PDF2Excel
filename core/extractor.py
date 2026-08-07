@@ -3,7 +3,6 @@ extraction results, ready for Parser.
 """
 
 from __future__ import annotations
-
 from core.models import (
     AnalysisMode,
     DocumentAnalysis,

@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
-
-import fitz
+import pymupdf as fitz
 from core.constants import Image
 from core.models import (
     PageImage,
@@ -135,8 +133,8 @@ class PDFReader:
 
         return PageImage(
             samples=pixmap.samples,
-            width=pixmap.width,
-            height=pixmap.height,
+            width=int(getattr(pixmap, "width")),
+            height=int(getattr(pixmap, "height")),
             dpi=Image.DPI,
         )
 

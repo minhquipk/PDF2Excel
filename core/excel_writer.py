@@ -21,13 +21,11 @@ Quy ước (ADR-006, ADR-002, ADR-004):
 """
 
 from __future__ import annotations
-
+from copy import copy
 from pathlib import Path
-
 import openpyxl
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.cell import range_boundaries
-
 from core.models import ExcelMapping, ExcelWriteResult, InvoiceInfo, InvoiceWarning
 
 
@@ -55,7 +53,6 @@ class ExcelWriter:
         """
         Ghi toàn bộ invoices vào Excel Table (mapping.table), lưu workbook
         1 lần sau khi ghi xong toàn bộ (đối xứng ADR-008 ở cấp file).
-
         Raises
         ------
         WorkbookNotFoundError
@@ -73,14 +70,41 @@ class ExcelWriter:
 
         warnings: list[InvoiceWarning] = []
         written = 0
-        next_row = self._table_max_row(table) + 1
 
+        has_total = self._is_total_row_present(table)
+        start_row = self._find_start_row(worksheet, table)
+        count = len(invoices)
+
+        min_col, min_row, max_col, old_max_row = range_boundaries(table.ref)
+        data_end_row = old_max_row - 1 if has_total else old_max_row
+
+        available_empty_rows = max(0, data_end_row - start_row + 1)
+
+        if count > available_empty_rows and has_total:
+            rows_to_insert = count - available_empty_rows
+            insert_at = data_end_row + 1
+            worksheet.insert_rows(insert_at, amount=rows_to_insert)
+
+        current_row = start_row
+        sample_row = min_row + 1
         for invoice in invoices:
-            self._write_row(worksheet, next_row, invoice, column_index, warnings)
-            next_row += 1
+            self._write_row(
+                worksheet,
+                current_row,
+                invoice,
+                column_index,
+                warnings,
+                sample_row=sample_row,
+            )
+            current_row += 1
             written += 1
 
-        self._expand_table_ref(table, next_row - 1)
+        new_max_row = max(
+            old_max_row,
+            current_row - 1 + (1 if has_total else 0),
+        )
+        self._expand_table_ref(table, new_max_row)
+        self._autofit_columns(worksheet, table)
         self._save_workbook(workbook, path)
 
         return ExcelWriteResult(
@@ -118,9 +142,29 @@ class ExcelWriter:
         )
 
     @staticmethod
-    def _table_max_row(table) -> int:
-        _, _, _, max_row = range_boundaries(table.ref)
-        return max_row
+    def _is_total_row_present(table) -> bool:
+        """Kiểm tra xem Table có dòng Total hay không."""
+        return bool(
+            getattr(table, "totalsRowCount", 0)
+            or getattr(table, "totalsRowShown", False)
+        )
+
+    @staticmethod
+    def _find_start_row(worksheet, table) -> int:
+        """Tìm dòng trống đầu tiên ngay sau dòng dữ liệu cuối cùng trong Table."""
+        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        has_total = ExcelWriter._is_total_row_present(table)
+        data_end_row = max_row - 1 if has_total else max_row
+
+        last_data_row = min_row
+        for r in range(min_row + 1, data_end_row + 1):
+            if any(
+                worksheet.cell(row=r, column=c).value is not None
+                for c in range(min_col, max_col + 1)
+            ):
+                last_data_row = r
+
+        return last_data_row + 1
 
     @staticmethod
     def _read_header(worksheet, table) -> dict[str, int]:
@@ -175,9 +219,35 @@ class ExcelWriter:
                 f"Không lưu được workbook '{path}': {error}"
             ) from error
 
-    # ------------------------------------------------------------------
-    # Row
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _autofit_columns(
+        worksheet, table, padding: int = 3, min_width: int = 12
+    ) -> None:
+        """Tự động điều chỉnh độ rộng các cột trong Table vừa vặn với nội dung."""
+        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        for col in range(min_col, max_col + 1):
+            max_len = 0
+            for row in range(min_row, max_row + 1):
+                val = worksheet.cell(row=row, column=col).value
+                if val is not None:
+                    lines = str(val).split("\n")
+                    for line in lines:
+                        max_len = max(max_len, len(line))
+            col_letter = get_column_letter(col)
+            worksheet.column_dimensions[col_letter].width = max(
+                max_len + padding, min_width
+            )
+
+    @staticmethod
+    def _copy_cell_style(source_cell, target_cell) -> None:
+        """Sao chép toàn bộ định dạng (style, format) từ ô mẫu sang ô mới."""
+        if source_cell.has_style:
+            target_cell.number_format = copy(source_cell.number_format)
+            target_cell.font = copy(source_cell.font)
+            target_cell.fill = copy(source_cell.fill)
+            target_cell.border = copy(source_cell.border)
+            target_cell.alignment = copy(source_cell.alignment)
+            target_cell.protection = copy(source_cell.protection)
 
     @staticmethod
     def _write_row(
@@ -186,10 +256,14 @@ class ExcelWriter:
         invoice: InvoiceInfo,
         column_index: dict[int, str],
         warnings: list[InvoiceWarning],
+        sample_row: int,
     ) -> None:
         for col, field_name in column_index.items():
             value = getattr(invoice, field_name, None)
-            worksheet.cell(row=row, column=col, value=value)
+            target_cell = worksheet.cell(row=row, column=col, value=value)
+
+            source_cell = worksheet.cell(row=sample_row, column=col)
+            ExcelWriter._copy_cell_style(source_cell, target_cell)
 
             if value is None:
                 warnings.append(

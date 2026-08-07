@@ -11,13 +11,11 @@ Quy ước:
 """
 
 from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any
-
 from core.enums import SpatialDirection, ValueType
-from core.models import FieldDefinition, SpatialRelation, TemplateDefinition
+from core.models import FieldDefinition, SectionDefinition, SpatialRelation, TemplateDefinition
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -90,6 +88,11 @@ class TemplateLoader:
         if not isinstance(raw_fields, list) or not raw_fields:
             raise ValueError("Template phải có ít nhất 1 field trong 'fields'.")
 
+        raw_sections = raw.get("sections", [])
+        sections = tuple(
+            TemplateLoader._build_section(raw_section) for raw_section in raw_sections
+        )
+
         fields = tuple(
             TemplateLoader._build_field(raw_field) for raw_field in raw_fields
         )
@@ -99,6 +102,7 @@ class TemplateLoader:
             version=int(raw["version"]),
             description=raw.get("description", ""),
             fields=fields,
+            sections=sections,
         )
 
     @staticmethod
@@ -112,6 +116,7 @@ class TemplateLoader:
 
         return FieldDefinition(
             field_name=raw_field["field_name"],
+            section=raw_field["section"],
             value_type=ValueType(raw_field["value_type"]),
             identification_weight=float(raw_field["identification_weight"]),
             key_tokens=tuple(key_tokens),
@@ -122,6 +127,15 @@ class TemplateLoader:
             value_pattern=raw_field["value_pattern"],
             date_format=raw_field.get("date_format"),
             decimal_format=raw_field.get("decimal_format"),
+        )
+
+    @staticmethod
+    def _build_section(raw_section: dict[str, Any]) -> SectionDefinition:
+        key_tokens = raw_section.get("key_tokens")
+        return SectionDefinition(
+            section_id=raw_section["section_id"],
+            key_tokens=tuple(key_tokens) if key_tokens else None,
+            fuzzy_threshold=int(raw_section.get("fuzzy_threshold", 85)),
         )
 
     @staticmethod

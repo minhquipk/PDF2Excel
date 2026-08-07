@@ -10,12 +10,10 @@ Quy ước:
 """
 
 from __future__ import annotations
-
 import json
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
-
 from core.models import ExcelMapping, InvoiceInfo
 
 
@@ -32,7 +30,6 @@ class Mapper:
     def load(self) -> ExcelMapping:
         """
         Đọc mapping_path -> ExcelMapping.
-
         Raises
         ------
         MappingError
