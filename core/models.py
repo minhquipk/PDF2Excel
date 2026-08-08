@@ -186,6 +186,7 @@ class PageImage:
     width: int        # pixel width
     height: int        # pixel height
     dpi: int            # DPI dùng khi render — có thể truy vết
+    channels: int = 3  # số kênh màu mỗi pixel: 1 = grayscale, 3 = RGB
 
 
 @dataclass(slots=True, frozen=True)

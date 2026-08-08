@@ -67,7 +67,38 @@ class Report:
 class Image:
     """Cấu hình render ảnh trang PDF."""
     DPI = 300
-    COLORSPACE = "gray"
+    COLORSPACE = "rgb"
+
+
+class OCR:
+    """
+    Cấu hình cho OCREngine (RapidOCR, backend onnxruntime).
+    Toàn bộ giá trị dưới đây là mặc định ban đầu, CẦN TINH CHỈNH khi có
+    dữ liệu PDF Scanned/Hybrid thật (đối xứng cách TemplateMatching đã ghi
+    chú - xem SESSION_SUMMARIES.md, Session OCR).
+    """
+    # Ngôn ngữ nhận dạng (Rec.lang_type). Hard-code v1; UI cho chọn ngôn
+    # ngữ dự kiến v2 (xem CHANGELOG.md, Future Improvements).
+    REC_LANG = "vi"
+
+    # Model size: PP-OCRv6 "medium"/"small" đều hỗ trợ "vi" (đã verify qua
+    # tài liệu RapidOCR Model List). "medium" ưu tiên độ chính xác hơn tốc
+    # độ - phù hợp hoá đơn (ít trang/lần, không cần xử lý hàng loạt tốc độ
+    # cao như OCR streaming).
+    MODEL_TYPE = "medium"
+
+    # Bộ phân loại hướng dòng chữ 0/180 độ (tương đương use_angle_cls của
+    # PaddleOCR). KHÔNG xử lý trang nghiêng vài độ - xem DESKEW_* bên dưới.
+    USE_CLS = True
+
+    # --- Deskew (làm thẳng trang trước khi đưa vào RapidOCR) ---
+    # Góc nghiêng tối thiểu (độ) để coi là "nghiêng thật", tránh xoay theo
+    # nhiễu đo góc khi trang gần như đã thẳng.
+    DESKEW_MIN_ANGLE = 0.5
+
+    # Màu nền lấp vào phần biên trống sau khi xoay (giữ nguyên kích thước
+    # canvas gốc). Trắng (255) vì nền hoá đơn/tài liệu văn phòng luôn trắng.
+    DESKEW_FILL_VALUE = 255
 
 
 class Progress:

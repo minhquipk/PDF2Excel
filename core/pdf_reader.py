@@ -126,16 +126,17 @@ class PDFReader:
     @staticmethod
     def _render_page_image(page: fitz.Page) -> PageImage:
         """
-        Render page thành ảnh grayscale, raw pixmap samples.
+        Render page thành ảnh RGB, raw pixmap samples.
         """
 
-        pixmap = page.get_pixmap(dpi=Image.DPI, colorspace=fitz.csGRAY)
+        pixmap = page.get_pixmap(dpi=Image.DPI, colorspace=fitz.csRGB)
 
         return PageImage(
             samples=pixmap.samples,
             width=int(getattr(pixmap, "width")),
             height=int(getattr(pixmap, "height")),
             dpi=Image.DPI,
+            channels=3,
         )
 
     @staticmethod

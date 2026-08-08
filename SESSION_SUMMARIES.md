@@ -1031,3 +1031,20 @@ Tinh chỉnh SECTION_TIE_MARGIN và các hằng số TemplateMatching.* khác kh
 Đánh giá rủi ro tràn của gap-based Value merge trên nhiều layout hơn.
 Điều chỉnh resources/excel_mapping.json khớp workbook thật (vẫn mở từ Session 2026-08-03).
 Các việc tồn đọng dài hạn khác không đổi: processor.py vs Worker.process(), main.py vs ui/main_window.py, OCR backend thật, UIText.REPORT_PENDING dead code, Document/Graphics Rules cho PDFDetector.
+
+---
+
+## Session 2026-08-07 (Khắc phục lỗi OCREngine & Startup UI)
+
+### Objective
+Khắc phục lỗi crash ứng dụng ngay khi bật giao diện UI (`main_window.py`) do `OCREngine.__init__()` nạp `_PaddleOCR` quá sớm và xung đột thuộc tính `strides` trong Paddle 3.0.0 PIR engine (`ValueError: Type of attribute: strides is not right`).
+
+### Completed
+- **`core/ocr_engine.py`**: Chuyển sang cơ chế Lazy Loading (`self._ocr = None`, khởi tạo 1 lần duy nhất qua `_get_ocr()` khi `recognize()` được gọi lần đầu).
+- **`core/constants.py`**: Bổ sung `USE_DOC_ORIENTATION_CLASSIFY = False` và `USE_DOC_UNWARPING = False` trong `class OCR` để tắt các tiền xử lý phụ thừa của PaddleX (deskew đã có OpenCV `_deskew()` đảm nhiệm).
+
+### Architecture Decisions
+- **ADR-046**: Lazy Loading OCREngine & Tắt Tiền Xử Lý Phụ Của PaddleX Đảm Bảo Khởi Động UI Không Crash.
+
+### Validation
+- Đã kiểm thử chạy offscreen `MainWindow()` thành công, ứng dụng khởi động tức thì, không bị freeze và không bị sập.

@@ -5,9 +5,11 @@ All notable changes to this project are documented here.
 The format is chronological and focuses on architectural milestones
 rather than Git commits.
 
-------------------------------------------------------------------------
+### Fixed
+-   Chuyển `OCREngine` sang cơ chế Lazy Loading (`core/ocr_engine.py`) và tắt các bộ tiền xử lý xoay/nắn trang thừa của PaddleX (`core/constants.py`), giải quyết triệt để lỗi crash khi bật giao diện UI (`main_window.py`) và lỗi PIR attribute `strides` trong PaddlePaddle 3.0.0 (ADR-046).
 
-## Unreleased
+### Changed
+-   Bổ sung `paddleocr==3.7.0`, `numpy==2.5.1`, `opencv-contrib-python==4.10.0.84` vào `requirements.txt` giải quyết cảnh báo thiếu dependency của IDE tại `core/ocr_engine.py`.
 
 ### Next
 

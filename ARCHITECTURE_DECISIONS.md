@@ -923,3 +923,22 @@ SECTION_TIE_MARGIN = 10 là giá trị placeholder ban đầu, cùng loại vớ
 Confirmed trong implementation: core/models.py::SectionDefinition, FieldDefinition.section, TemplateDefinition.sections; core/template_matcher.py::TemplateMatcher._find_key_match(), _resolve_sections(), _filter_phrases_by_range(), _score_template(); core/template_loader.py::TemplateLoader._build_section(); core/constants.py::TemplateMatching.SECTION_TIE_MARGIN.
 
 Verify: toàn bộ 12/12 field của sample_invoice_v1.json (v3) ra đúng kết quả trên HD2026-0003_digital.pdf thật, bao gồm tax_code ('0104101075', đúng MST bên bán) và invoice_date (đảm bảo, không còn phụ thuộc thứ tự - xác nhận trong phạm vi section "header" chỉ còn đúng 1 candidate khớp "ngày").
+
+------------------------------------------------------------------------
+
+ADR-046 --- Lazy Loading OCREngine & Tắt Tiền Xử Lý Phụ Của PaddleX Đảm Bảo Khởi Động UI Không Crash
+
+Status: Accepted
+
+Khắc phục lỗi crash ứng dụng ngay khi khởi động UI (`ui/main_window.py`) do khởi tạo `_PaddleOCR` quá sớm trong `OCREngine.__init__()` và lỗi xung đột thuộc tính `strides` trong Paddle 3.0.0 PIR engine.
+
+Thiết kế đã chọn:
+1. Lazy Loading: `OCREngine.__init__()` chỉ thiết lập `self._ocr = None`. Hàm `_get_ocr()` trì hoãn việc khởi tạo `_PaddleOCR` đến lần đầu tiên hàm `recognize()` thực sự được gọi (chỉ xảy ra khi gặp PDF Scanned/Hybrid trong tiến trình Worker). Instance này được giữ lại và tái sử dụng 100% cho toàn bộ các trang/PDF tiếp theo trong batch (đảm bảo đúng nguyên tắc khởi tạo 1 lần duy nhất).
+2. Tắt preprocessor thừa: Trong `core/constants.py`, thêm các cờ `USE_DOC_ORIENTATION_CLASSIFY = False`, `USE_DOC_UNWARPING = False`, `USE_TEXTLINE_ORIENTATION = False`. Bước làm thẳng trang (deskew) vẫn được `OCREngine._deskew()` xử lý nội bộ bằng OpenCV.
+
+Lợi ích:
+- Khởi động ứng dụng UI mượt mà, không bị khựng hay crash lúc vừa bật ứng dụng.
+- Tiết kiệm tài nguyên khi chạy batch PDF Digital (không tốn dung lượng RAM/CPU để nạp mô hình OCR).
+- Loại bỏ hoàn toàn lỗi PIR C++ attribute `strides` trong PaddlePaddle 3.0.0.
+
+Confirmed trong implementation: `core/constants.py::OCR`, `core/ocr_engine.py::OCREngine`.

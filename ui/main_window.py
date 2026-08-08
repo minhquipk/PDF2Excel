@@ -23,7 +23,6 @@ class MainWindow(QMainWindow):
     Responsibilities:
     - Build the UI.
     - Open file dialogs.
-    - Coordinate Worker (to be connected later).
     - Update UI state.
     """
     def __init__(self) -> None:

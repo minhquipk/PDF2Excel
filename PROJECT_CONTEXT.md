@@ -504,11 +504,7 @@ Fuzzy Matching
 
 - rapidfuzz — dùng bởi template_matcher.py cho Key Matching.
 
-Dependency file: `requirements.txt` (project root) — pin version 4
-package trên (`PySide6`, `PyMuPDF`, `rapidfuzz`, `openpyxl`), version
-đã được xác nhận qua kiểm thử thực tế trong phiên triển khai
-excel_writer/report_writer. Trước đó dự án không có dependency file
-nào (Known Issue từ Session 2026-08-01/02) — đã giải quyết.
+Dependency file: `requirements.txt` (project root) — pin các package (`PySide6`, `PyMuPDF`, `rapidfuzz`, `openpyxl`, `paddleocr`, `numpy`, `opencv-contrib-python`), phiên bản đã được xác nhận qua kiểm thử thực tế.
 
 ---
 
