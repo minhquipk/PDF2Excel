@@ -32,6 +32,7 @@ def _configure_root() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     file_handler = logging.FileHandler(
         LOG_DIR / LoggingConfig.FILE_NAME,
+        mode="w",
         encoding="utf-8",
     )
     file_handler.setFormatter(formatter)

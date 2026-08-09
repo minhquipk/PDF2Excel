@@ -1,8 +1,9 @@
 from __future__ import annotations
+import time
 from core.constants import FileDialog, Table, UIText, Window
 from models.processing_table_model import ProcessingTableModel
 from ui.widgets import PathSelectorWidget, ProgressWidget, ProcessingTable
-from PySide6.QtCore import QThread, QUrl
+from PySide6.QtCore import QThread, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from ui.worker import Worker
 from PySide6.QtWidgets import (
@@ -33,6 +34,12 @@ class MainWindow(QMainWindow):
         self._worker.moveToThread(self._thread)
         self._table_model = ProcessingTableModel()
         self._has_error = False
+        self._start_time: float = 0.0
+
+        # Timer tick mỗi giây để cập nhật elapsed liên tục (ADR-001: UI tự lo việc UI)
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(1000)
+        self._elapsed_timer.timeout.connect(self._on_elapsed_tick)
 
         self.setWindowTitle(UIText.TITLE)
         self.resize(Window.WIDTH, Window.HEIGHT)
@@ -97,7 +104,7 @@ class MainWindow(QMainWindow):
         self._worker.finished.connect(self._thread.quit)
         self._worker.cancelled.connect(self.on_worker_cancelled)
         self._worker.cancelled.connect(self._thread.quit)
-        self._worker.file_processed.connect(self._table_model.append)
+        self._worker.file_processed.connect(self._table_model.prepend)
         self._worker.error.connect(self.on_worker_error)
 
         self.btn_start.clicked.connect(self._start)
@@ -163,6 +170,8 @@ class MainWindow(QMainWindow):
             self.input_widget.path(),
             self.output_widget.path(),
         )
+        self._start_time = time.time()
+        self._elapsed_timer.start()
         self._thread.start()
 
     def _stop(self) -> None:
@@ -192,12 +201,21 @@ class MainWindow(QMainWindow):
     # Worker callbacks (reserved)
     # ------------------------------------------------------------------
 
+    def _on_elapsed_tick(self) -> None:
+        """Tick mỗi giây: tính elapsed từ _start_time và cập nhật lbl_elapsed."""
+        elapsed_seconds = time.time() - self._start_time
+        self.progress_widget.update_elapsed(
+            Worker._format_time(elapsed_seconds)
+        )
+
     def on_worker_finished(self) -> None:
+        self._elapsed_timer.stop()
         self._set_running(False)
         if not self._has_error:
             self._report()
 
     def on_worker_cancelled(self) -> None:
+        self._elapsed_timer.stop()
         self._set_running(False)
 
     def on_worker_progress(
@@ -207,10 +225,10 @@ class MainWindow(QMainWindow):
         elapsed: str,
         eta: str,
     ) -> None:
+        # elapsed từ Worker không dùng nữa — QTimer đảm nhiệm
         self.progress_widget.update_progress(
             processed,
             total,
-            elapsed,
             eta,
         )
 

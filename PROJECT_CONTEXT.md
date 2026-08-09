@@ -139,8 +139,10 @@ Completed:
   `DocumentAnalysis.mode` (Digital / OCR / per-page Hybrid);
   normalizes word geometry (incl. rotation reconciliation for the
   Digital path) into `WordToken`s ready for Parser.
-- ocr_engine.py — Mock implementation only (ADR-013); contract is
-  final, real OCR backend not yet wired in.
+- ocr_engine.py — **Real implementation** (Tesseract 5.x + tessdata_best
+  qua `pytesseract`), thay Mock (ADR-013). Xem ADR-047 (lịch sử lựa
+  chọn), ADR-049 (deskew). Không dùng Lazy Loading (khác ADR-046 vốn
+  cho bản PaddleOCR đã loại bỏ).
 - base_widget.py
 - widgets.py
 - main_window.py
@@ -478,8 +480,11 @@ PDF
 
 OCR
 
-- Backend not yet chosen; `ocr_engine.py` currently a Mock (ADR-013).
-  `pytesseract` remains the leading candidate (planned).
+- Tesseract 5.x + tessdata_best (qua `pytesseract`) - xem ADR-047.
+  Lưu ý: Tesseract là binary hệ thống, KHÔNG cài qua `pip` - phải tự
+  cài riêng (`brew install tesseract` macOS). `vie.traineddata`
+  (tessdata_best) cũng phải tự tải/đặt vào `TESSDATA_DIR`
+  (`resources/tessdata_best/`, xem `config.py`).
 
 Image
 
@@ -576,8 +581,6 @@ UI — that is the planned next step (see Section 15).
 
 Current:
 
-- Elapsed Time not implemented.
-- ETA not implemented.
 - Real OCR backend not implemented (`ocr_engine.py` is Mock only) —
   intentionally deferred, see Section 15.
 - `core/processor.py` is a placeholder (4 undefined method calls, not
@@ -672,6 +675,18 @@ Resolved (previously listed here, now implemented — see Section 4):
   awareness, not re-opening.)
 - Dependency file missing — resolved via `requirements.txt` added at
   project root, pinning `PySide6`, `PyMuPDF`, `rapidfuzz`, `openpyxl`.
+- Elapsed Time/ETA — implemented 
+- `Worker._format_note()` chọn warning đầu tiên theo thứ tự rule chạy
+  (`PDFDetector._evaluate_rules()`, luôn là `text_coverage`), không
+  phải warning liên quan nhất đến quyết định cuối cùng - có thể hiển
+  thị cảnh báo "bằng chứng yếu" cạnh kết luận High confidence, gây cảm
+  giác mâu thuẫn dù dữ liệu không sai. Phát hiện Session 2026-08-08/09,
+  hoãn thảo luận sang phiên sau.
+- 3 thay đổi sau được người dùng báo đã áp dụng vào source nhưng CHƯA
+  verify qua đối chiếu source thật trong phiên ghi nhận (Session
+  2026-08-08/09): `utils/logger.py` app.log đổi append->overwrite
+  (ADR-050); `models/processing_table_model.py` UI đổi append->prepend;
+  Elapsed/ETA đã hoàn thiện.
 
 ---
 
@@ -723,6 +738,14 @@ Inspect results: does the output `.xlsx` contain correct data? Does
 `reports/Report.txt` content make sense? Does the sample template
 (`sample_invoice_v1.json`) actually match fields in the real PDFs?
 
+**Cập nhật Session 2026-08-08/09:** Bước 3 đã thực hiện (lần chạy UI
+thật đầu tiên, Input Folder → Start → Report). Trọng tâm phiên lập tức
+chuyển sang debug OCR khi gặp PDF Scanned trong lượt chạy đó — xem
+ARCHITECTURE_DECISIONS.md ADR-047 đến ADR-050. Bước 4 (Inspect results)
+CHƯA xác nhận đầy đủ cho PDF Digital-mode trong đúng lượt chạy này —
+cần verify riêng ở phiên sau. Điều kiện "Sau khi có lượt chạy UI thật,
+quay lại Hướng 2" (câu cuối mục 5 dưới đây) đã được kích hoạt và thực
+hiện ngay trong phiên này.
 ↓
 
 5.

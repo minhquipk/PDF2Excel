@@ -1048,3 +1048,165 @@ Khắc phục lỗi crash ứng dụng ngay khi bật giao diện UI (`main_wind
 
 ### Validation
 - Đã kiểm thử chạy offscreen `MainWindow()` thành công, ứng dụng khởi động tức thì, không bị freeze và không bị sập.
+
+---
+
+# Session 2026-08-08 / 2026-08-09
+
+## Objective
+
+Chạy UI thật lần đầu tiên với dữ liệu thật (kế hoạch 5 bước,
+PROJECT_CONTEXT.md §15). Thiết kế và triển khai `OCREngine` thật (thay
+Mock, ADR-013) cho luồng PDF Scanned/Hybrid.
+
+## Completed
+
+### First Real UI Run
+- Chạy UI thật (Input Folder -> Start -> Report) lần đầu tiên qua ứng
+  dụng thật - hoàn thành bước 3 kế hoạch 5 bước (PROJECT_CONTEXT.md
+  §15). Chi tiết kết quả không phải trọng tâm phiên này (trọng tâm
+  chuyển sang OCR ngay sau đó khi phát hiện file Scanned cần xử lý).
+
+### OCR Engine - Thảo luận thiết kế + 3 vòng thực nghiệm thư viện
+
+Thảo luận input/output/thư viện theo đúng Rule 11/12
+(DEVELOPMENT_WORKFLOW.md: freeze thiết kế trước khi implement). Quyết
+định ban đầu: PaddleOCR, input qua NumPy array, output
+Text/BoundingBox/DocumentImage (đã thảo luận từ trước phiên này).
+
+**Vòng 1 - PaddleOCR:** Triển khai đầy đủ (`constants.py`, `models.py`
+thêm `PageImage.channels`, `pdf_reader.py` đổi RGB, `ocr_engine.py`).
+Phát hiện qua chạy thật (không phải suy đoán): (a) API PaddleOCR 3.x
+khác hẳn tri thức huấn luyện cũ (`use_angle_cls`/`use_gpu` đã đổi tên
+thành `use_textline_orientation`/`device`; `model_type` phải là `Enum`
+không phải string); (b) lỗi tương thích `paddlepaddle`/PIR
+(`ValueError: strides is not right`) khi chạy thật trên PDF Scanned -
+xác nhận qua GitHub Issue #18162 là lỗi đã biết, chưa có fix chính
+thức; (c) trên máy thật (macOS Ventura Intel Python 3.12), chỉ
+`paddleocr==2.7.3`+`paddlepaddle==2.6.2` chạy được - hạ cấp API và chất
+lượng model đáng kể, kèm rủi ro xung đột `numpy`/`pandas`.
+
+**Vòng 2 - RapidOCR:** Chuyển hướng sau khi đánh giá `paddlepaddle` là
+rủi ro cấu trúc (framework đang chuyển đổi kiến trúc PIR, không phải
+lỗi nhất thời). Verify thật: RapidOCR (backend `onnxruntime`) không cần
+`paddlepaddle`, hỗ trợ tiếng Việt (Model List chính thức), output
+`RapidOCROutput.boxes` dạng tứ giác `(N,4,2)` (cần tự quy về rect),
+`LoadImage` giả định `ndarray` đầu vào là BGR (cần tự
+`cv2.cvtColor(RGB2BGR)`, khác PaddleOCR). Phát hiện + sửa: `onnxruntime`
+không phải dependency chính thức (phải thêm dòng riêng); không có wheel
+`onnxruntime>=1.24` cho macOS Intel (hạ về `1.23.2`, verify qua venv
+sạch); lỗi lazy loading tự triển khai (`self._ocr` gọi trực tiếp thay
+vì qua `self._get_ocr()`) gây `TypeError: 'NoneType' object is not
+callable`. Sau khi sửa hết lỗi kỹ thuật, pipeline chạy thành công
+(không crash) nhưng **chất lượng nhận dạng tiếng Việt kém** - phát hiện
+qua debug thật của người dùng trên `HD2026-0001_scanned.pdf`.
+
+**Vòng 3 - Tesseract 5.x + tessdata_best (chốt):** Cân nhắc thêm 1
+phương án Hybrid (Tesseract Detection + VietOCR Recognition) - tra cứu
+thật cho thấy VietOCR dùng PyTorch không khai báo chính thức + tải model
+qua Google Drive (`gdown`, rủi ro rate-limit) - cộng dồn nhược điểm của
+cả 2 hướng, hoãn sang Future Improvements (Rule 9: không tối ưu sớm).
+Verify Tesseract+tessdata_best bằng chạy thật (cài qua `apt` trong
+sandbox để test, `vie.traineddata` tải từ repo chính thức
+`tesseract-ocr/tessdata_best`) trên đúng `HD2026-0001_scanned.pdf` -
+kết quả đọc đúng gần như tuyệt đối, giữ nguyên dấu tiếng Việt. Verify
+thêm cấu trúc bounding box per-word qua `pytesseract.image_to_data()` -
+rect trục-thẳng có sẵn (đơn giản hơn RapidOCR/PaddleOCR, không cần quy
+đổi tứ giác). Triển khai đầy đủ 4 file (`requirements.txt`, `config.py`,
+`core/constants.py::OCR`, `core/ocr_engine.py`) theo đúng Rule 2/3 (1
+file/1 bước). Quyết định KHÔNG áp dụng Lazy Loading (ADR-046) cho bản
+Tesseract - lý do: Tesseract chạy qua `subprocess`, không giữ model
+nặng trong tiến trình, không có gì cần trì hoãn.
+
+### Bug phát sinh sau khi người dùng tự chạy thật (đã sửa)
+
+- Deskew nhầm trang A4 dọc thành góc nghiêng ~90° (`minAreaRect` toàn
+  trang không phù hợp tài liệu nhiều khối như hoá đơn) - làm hỏng vị
+  trí mọi `WordToken`, khiến `TemplateMatcher.select_template()` thất
+  bại toàn bộ (triệu chứng: Excel/report.txt "Total: 0, Written: 0" dù
+  `PDFResult.status = Success`). Người dùng tự phát hiện + tự sửa bằng
+  ngưỡng `DESKEW_MAX_ANGLE=10.0`; hình thức hoá lại thành hằng số tường
+  minh trong `core/constants.py::OCR` (xem ADR-049).
+- Quá trình chẩn đoán: dựng lại thật `TemplateMatcher`/`TemplateLoader`
+  + logic Extractor trong sandbox, chạy trực tiếp trên
+  `HD2026-0001_scanned.pdf` qua Tesseract thật - lần đầu KHÔNG tái hiện
+  được lỗi (vì script chẩn đoán bỏ qua bước deskew, nên không dính bug
+  90°) - cho thấy rõ nguyên nhân nằm ở `OCREngine`, không phải
+  `TemplateMatcher`/`Parser` như nghi ngờ ban đầu. Đã `git clone` trực
+  tiếp repo GitHub thật (`https://github.com/minhquipk/PDF2Excel`) để
+  đối chiếu `TemplateMatching.*`/`sample_invoice_v1.json` mới nhất,
+  loại trừ khả năng lệch cấu hình trước khi kết luận đúng nguyên nhân.
+
+## Architecture Decisions
+
+Xem ARCHITECTURE_DECISIONS.md ADR-047 đến ADR-050. Tóm tắt: OCR Engine
+chốt Tesseract+tessdata_best (ADR-047, kèm lịch sử loại PaddleOCR/
+RapidOCR); PageImage render RGB thay Grayscale, amend ADR-026 (ADR-048);
+Deskew giữ nguyên canvas + ngưỡng chặn góc giả DESKEW_MAX_ANGLE
+(ADR-049); app.log ghi đè thay vì tích luỹ, amend ADR-040 (ADR-050).
+
+## Issues Encountered
+
+Đã mô tả chi tiết ở mục Completed (3 vòng thư viện + bug deskew). Bài
+học chung: với các thư viện OCR/ML Python, backend nặng (framework suy
+luận: `paddlepaddle`, `onnxruntime`, `torch`) thường KHÔNG được khai
+báo là dependency chính thức của package wrapper cấp cao - đây là mẫu
+hình lặp lại ít nhất 2 lần trong phiên này (`rapidocr`/`onnxruntime`,
+`vietocr`/`torch`), cần luôn verify qua `pip show`/metadata thật trước
+khi tin vào "chỉ cần pip install 1 gói là đủ".
+
+## Validation
+
+- PaddleOCR, RapidOCR: verify qua chạy thật trong sandbox VÀ trên máy
+  thật của người dùng (macOS Ventura Intel Python 3.12) - cả 2 đều phát
+  hiện vấn đề thật không thấy được qua review tài liệu/tĩnh.
+- Tesseract+tessdata_best: verify qua chạy thật trong sandbox (cài qua
+  `apt`, tải `tessdata_best` chính thức) trên `HD2026-0001_scanned.pdf`
+  - kết quả đối chiếu trực tiếp với nội dung PDF gốc, khớp gần 100%.
+- Bug deskew 90°: verify qua dựng lại `TemplateMatcher` thật trong
+  sandbox (không phải giả lập) + đối chiếu trực tiếp source GitHub qua
+  `git clone` - xác nhận đúng nguyên nhân trước khi người dùng xác nhận
+  đã tự sửa.
+- UI real run, logger.py (append->overwrite), processing_table_model.py
+  (append->prepend), Elapsed/ETA: ghi nhận theo mô tả của người dùng,
+  **CHƯA verify qua source thật trong phiên này** (người dùng chọn ghi
+  trực tiếp theo mô tả thay vì đối chiếu qua `git clone`).
+
+## Next Session
+
+Priority:
+
+1. Thảo luận riêng vấn đề `Worker._format_note()` chọn sai warning hiển
+   thị (đã ghi nhận, hoãn từ phiên này - xem CHANGELOG.md, Known Issue
+   mới).
+2. Verify qua source thật 3 thay đổi đã ghi nhận theo mô tả (logger.py,
+   processing_table_model.py, Elapsed/ETA) - đối chiếu byte-for-byte
+   với GitHub khi có dịp, nhất quán cách các phiên trước đã làm (VD
+   Session 2026-08-03 đối chiếu toàn bộ source trước khi coi là verify
+   xong).
+3. Đánh giá thêm dữ liệu PDF Scanned/Hybrid thật đa dạng hơn cho
+   Tesseract+tessdata_best (hiện chỉ verify trên 1 file) - đặc biệt các
+   trường hợp nghiêng thật gần ngưỡng `DESKEW_MAX_ANGLE=10.0`, để tinh
+   chỉnh ngưỡng nếu cần.
+4. Cân nhắc thêm tài liệu cài đặt cho end-user (Tesseract là binary hệ
+   thống, không thuần `pip`; `vie.traineddata` phải tự tải/đặt vào
+   `TESSDATA_DIR`) - hiện chưa có tài liệu dạng `EXCEL_MAPPING_GUIDE.md`
+   tương đương cho bước cài đặt OCR.
+5. Cân nhắc giới hạn version trên cho `opencv_python` trong tài liệu cài
+   đặt (đề xuất của người dùng, chưa thảo luận sâu - ghi nhận từ phiên
+   này).
+6. Việc tồn đọng dài hạn không đổi: `processor.py` vs `Worker.process()`,
+   `main.py` vs `ui/main_window.py`, `UIText.REPORT_PENDING` dead code.
+
+## Notes
+
+Phiên này có quy mô bất thường lớn do phải thử nghiệm tuần tự 3 thư
+viện OCR khác nhau trước khi tìm được lựa chọn đạt yêu cầu chất lượng -
+đây không phải vi phạm Rule 1 (kiến trúc không đổi tuỳ tiện): mỗi lần
+đổi đều có bằng chứng thực nghiệm thật buộc phải đổi (lỗi tương thích
+không thể sửa được ở tầng dự án với PaddleOCR; chất lượng không đạt với
+RapidOCR), không phải thay đổi theo cảm tính. Nguyên tắc "chạy thật để
+verify" (đã thiết lập từ các phiên Template Matching trước) tiếp tục
+chứng minh giá trị - cả 3 vấn đề nghiêm trọng nhất trong phiên (PIR
+error, chất lượng RapidOCR kém, bug deskew 90°) đều CHỈ phát hiện được
+qua chạy thật, không thấy được qua review tài liệu/code tĩnh.

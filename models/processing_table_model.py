@@ -65,10 +65,9 @@ class ProcessingTableModel(QAbstractTableModel):
                 return _HEADERS[section]
             return None
 
-    def append(self, item: PDFResult):
-        r = len(self._items)
-        self.beginInsertRows(QModelIndex(), r, r)
-        self._items.append(item)
+    def prepend(self, item: PDFResult):
+        self.beginInsertRows(QModelIndex(), 0, 0)
+        self._items.insert(0, item)
         self.endInsertRows()
 
     def append_many(self, items: Iterable[PDFResult]):

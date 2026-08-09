@@ -144,5 +144,11 @@ class OCREngine:
         angle = cv2.minAreaRect(coords)[-1]
 
         if angle < -45:
-            return -(90 + angle)
-        return -angle
+            angle = -(90 + angle)
+        else:
+            angle = -angle
+        # CHỈ deskew nếu nghiêng nhẹ (dưới 10 độ).
+        # Bỏ qua góc lớn do minAreaRect nhầm khung A4 đứng, tránh xoay ngang trang 90 độ!
+        if abs(angle) > OCR.DESKEW_MAX_ANGLE:
+            return 0.0
+        return angle

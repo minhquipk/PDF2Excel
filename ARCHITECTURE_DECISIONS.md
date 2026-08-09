@@ -942,3 +942,197 @@ Lợi ích:
 - Loại bỏ hoàn toàn lỗi PIR C++ attribute `strides` trong PaddlePaddle 3.0.0.
 
 Confirmed trong implementation: `core/constants.py::OCR`, `core/ocr_engine.py::OCREngine`.
+
+------------------------------------------------------------------------
+
+## ADR-047 --- OCR Engine Final Selection: Tesseract 5.x + tessdata_best
+
+**Status:** Accepted
+
+Sau khi thực nghiệm tuần tự 2 thư viện khác trong cùng phiên, `OCREngine`
+(`core/ocr_engine.py`) chốt dùng **Tesseract 5.x + tessdata_best** (qua
+`pytesseract`), thay thế Mock (ADR-013).
+
+### Lịch sử lựa chọn (đầy đủ, để tránh lặp lại thử nghiệm đã loại)
+
+1. **PaddleOCR (paddleocr==3.7.0)** — loại bỏ. Nguyên nhân thật: xung đột
+   version giữa `paddleocr==3.7.0` và `paddlepaddle` ở tầng PIR (Paddle
+   Intermediate Representation) — lỗi `ValueError: Type of attribute:
+   strides is not right` khi chạy thật trên PDF Scanned. Xác nhận qua
+   GitHub Issue #18162 (PaddleOCR repo, cùng loại lỗi, chưa có fix chính
+   thức tại thời điểm thử nghiệm). Trên môi trường thật của người vận
+   hành (macOS Ventura, Intel, Python 3.12), tổ hợp duy nhất chạy được là
+   `paddleocr==2.7.3` + `paddlepaddle==2.6.2` — buộc hạ về API 2.x cũ
+   (PP-OCR đời thấp hơn nhiều so với PP-OCRv6 mà bản 3.x dùng), đồng thời
+   có nguy cơ xung đột `numpy`/`pandas` do ràng buộc version cũ.
+
+2. **RapidOCR (rapidocr==3.9.2, backend onnxruntime)** — loại bỏ.
+   - Ưu điểm đã xác nhận: không phụ thuộc `paddlepaddle` (loại bỏ tận gốc
+     rủi ro PIR), hỗ trợ tiếng Việt (`vi`) qua model PP-OCRv6 (xác nhận
+     qua tài liệu Model List chính thức), cấu trúc I/O verify được qua
+     source thật (`RapidOCROutput.boxes` dạng tứ giác `(N,4,2)`,
+     `LoadImage` giả định `numpy.ndarray` đầu vào là BGR - cần tự
+     `cv2.cvtColor(RGB2BGR)`).
+   - Vấn đề triển khai đã gặp và tự sửa trong phiên: (a) `onnxruntime`
+     KHÔNG được khai báo là dependency chính thức của `rapidocr` (kể cả
+     dạng extras) - phải tự thêm dòng riêng vào `requirements.txt`; (b)
+     `onnxruntime>=1.24` không có wheel cho macOS Intel - phải hạ về
+     `onnxruntime==1.23.2` (verify thật qua venv sạch); (c) lỗi lazy
+     loading tự triển khai: `recognize()` gọi thẳng `self._ocr(...)`
+     thay vì `self._get_ocr()(...)`, khiến `self._ocr` luôn là `None` ->
+     `TypeError: 'NoneType' object is not callable`.
+   - **Lý do loại bỏ cuối cùng: chất lượng nhận dạng tiếng Việt kém**,
+     xác nhận qua debug thật của người vận hành trên `HD2026-0001_scanned.pdf`
+     (không phải do bug code - pipeline chạy không crash, nhưng text OCR
+     ra sai nhiều). Đây là lý do quyết định, vượt trên mọi ưu điểm về
+     dependency/cài đặt.
+
+3. **Tesseract 5.x + tessdata_best** — **chọn cuối cùng**. Verify thật
+   bằng cách chạy `pytesseract.image_to_data()` (Tesseract 5.3.4,
+   `vie.traineddata` tải từ `tesseract-ocr/tessdata_best` chính thức)
+   trên đúng `HD2026-0001_scanned.pdf` - kết quả đọc đúng gần như tuyệt
+   đối, giữ nguyên dấu tiếng Việt, khớp gần 100% với nội dung PDF gốc.
+   Bounding box trả về sẵn dạng rect trục-thẳng (`left,top,width,height`)
+   - đơn giản hơn RapidOCR/PaddleOCR (không cần bước quy tứ giác->rect).
+
+### Phương án cân nhắc nhưng không triển khai: Hybrid (Tesseract Det + VietOCR Rec)
+
+Được đề xuất giữa phiên, đánh giá qua tra cứu thật (PyPI, GitHub source
+`pbcquoc/vietocr`): VietOCR dùng PyTorch (`import torch`/`torchvision`
+xác nhận qua source) nhưng **không khai báo `torch` là dependency chính
+thức** (giống hệt mẫu hình `rapidocr`/`onnxruntime`) - phải tự cài
+riêng, nặng hơn nhiều so với `onnxruntime`. Model weight tải qua Google
+Drive (`gdown`) - nguồn tải thứ 3 (khác `bcebos.com` của PaddleOCR,
+`modelscope.cn` của RapidOCR), có rủi ro rate-limit thật của Google
+Drive với file phổ biến. Kiến trúc Hybrid cộng dồn CẢ HAI nhược điểm
+(Tesseract: binary hệ thống; VietOCR: framework nặng), không né được
+nhược điểm nào. Quyết định: **hoãn sang Future Improvements** - Tesseract
++ tessdata_best đã đủ tốt qua thực nghiệm thật (Rule 9 DEVELOPMENT_WORKFLOW:
+"Never optimize early"), chỉ quay lại Hybrid nếu có dữ liệu thật cho
+thấy `tessdata_best` không đủ (chữ viết tay, font lạ, ảnh chất lượng
+kém).
+
+### Hệ quả kiến trúc quan trọng: KHÔNG áp dụng Lazy Loading (khác ADR-046)
+
+`ADR-046` (Lazy Loading cho `OCREngine`, áp dụng cho bản PaddleOCR) đã
+được xem xét lại và **không mang sang Tesseract**: Tesseract hoạt động
+qua `subprocess` gọi binary hệ thống mỗi lần `image_to_data()` được gọi
+- không giữ "model nặng" nào trong bộ nhớ tiến trình, nên không có gì
+cần trì hoãn khởi tạo. `OCREngine.__init__()` (bản Tesseract) chỉ làm 1
+việc: fail-fast kiểm tra `vie.traineddata` tồn tại (raise
+`FileNotFoundError` kèm URL tải + đường dẫn đích nếu thiếu) và dựng
+sẵn chuỗi cấu hình `--tessdata-dir ... --psm ... --oem ...` dùng lại cho
+mọi lần gọi. ADR-046 vẫn giữ nguyên giá trị lịch sử/tham khảo cho các
+OCR engine dạng "nạp model vào tiến trình" trong tương lai, nhưng không
+còn áp dụng cho `OCREngine` hiện tại.
+
+Confirmed trong implementation: `core/ocr_engine.py`, `requirements.txt`
+(`pytesseract==0.3.13`), `config.py::TESSDATA_DIR`,
+`core/constants.py::OCR`.
+
+------------------------------------------------------------------------
+
+## ADR-048 --- PageImage Render RGB (Amend ADR-026), Kèm PageImage.channels
+
+**Status:** Accepted (amends ADR-026)
+
+`ADR-026` (Eager, Raw **Grayscale** Page Image Rendering) được sửa lại:
+`PDFReader._render_page_image()` nay render **RGB** (`fitz.csRGB`) thay
+vì `fitz.csGRAY`.
+
+**Lý do đổi (không phải vì tốc độ):** giữ màu thật cho OCR - hoá đơn
+Việt Nam thường có con dấu đỏ, chữ ký mực màu; GRAY->RGB giả (R=G=B)
+không phục hồi được màu đã mất, trong khi RGB thật giúp OCR tận dụng độ
+tương phản màu thật. Cân nhắc chi phí: RGB tốn gấp 3 lần bộ nhớ/trang
+(~24.9 MB so với ~8.3 MB ở A4/300 DPI) áp dụng cho MỌI trang của MỌI
+PDF (kể cả Digital-mode không bao giờ chạy OCR, do `PDFReader` chạy
+trước `PDFDetector`, không biết trước trang nào cần OCR - ADR-016). Chấp
+nhận đánh đổi này vì mục tiêu chất lượng màu, không phải vì "tránh
+convert 2 lần" (lợi ích tốc độ không đáng kể so với chi phí bộ nhớ).
+
+**Đồng thời:** `PageImage` (`core/models.py`) được thêm field
+`channels: int = 3` - tự mô tả số kênh màu (DP-008, Explicit Over
+Implicit, đúng tinh thần ADR-026 gốc), tránh giả định ngầm 1 hay 3 kênh
+tại nơi tiêu thụ (`OCREngine._to_numpy_array()`). Docstring `PageImage`
+đổi "Raw grayscale pixmap" -> "Raw pixmap" (không còn cố định grayscale).
+
+Đồng thời sửa `core/constants.py::Image.COLORSPACE` từ `"gray"` ->
+`"rgb"` (hằng số đã tồn tại từ trước nhưng không thực sự được
+`pdf_reader.py` sử dụng - sửa để không sai lệch thêm với thực tế, dù
+vẫn là constant chưa dùng tới).
+
+Confirmed trong implementation: `core/pdf_reader.py::PDFReader._render_page_image()`,
+`core/models.py::PageImage`, `core/constants.py::Image`.
+
+------------------------------------------------------------------------
+
+## ADR-049 --- OCR Deskew: Giữ Nguyên Canvas + Ngưỡng Chặn Góc Giả (DESKEW_MAX_ANGLE)
+
+**Status:** Accepted
+
+`OCREngine` tự triển khai bước làm thẳng trang (deskew) trước khi đưa
+vào OCR engine (độc lập với engine nào được chọn - đã giữ nguyên logic
+qua cả 3 lần đổi thư viện). 2 ràng buộc thiết kế:
+
+1. **Giữ nguyên kích thước canvas khi xoay** (`cv2.warpAffine` với
+   `dsize` bằng đúng `(width, height)` gốc, biên trống lấp màu trắng
+   `DESKEW_FILL_VALUE=255`) - đảm bảo `page_image.width/height` vẫn là
+   mẫu số chuẩn hoá hợp lệ cho `Extractor._normalize_bbox()`, không cần
+   đổi contract `recognize()`.
+
+2. **`DESKEW_MAX_ANGLE = 10.0`** (mới, phát hiện qua chạy thật) - ngưỡng
+   chặn trên cho góc nghiêng ước lượng được. Nguyên nhân: thuật toán ước
+   lượng góc (`cv2.minAreaRect()` bao toàn bộ điểm nội dung của cả
+   trang) được thiết kế cho 1 khối văn bản đặc dày (kỹ thuật phổ biến,
+   nguồn gốc pyimagesearch), KHÔNG phù hợp với tài liệu nhiều khối rải
+   rác như hoá đơn (header/block bán/block mua/bảng chi tiết/chữ ký).
+   Với trang A4 khổ đứng, nội dung rải theo chiều cao khiến
+   `minAreaRect` bám theo tỷ lệ khung trang (cao hơn rộng) thay vì tỷ lệ
+   1 dòng chữ, trả về góc giả gần `-90°` theo quy ước OpenCV -> `_deskew`
+   xoay ngang toàn bộ trang 90°, làm hỏng vị trí mọi `WordToken`, dẫn
+   đến Key Matching/Windowing thất bại toàn bộ ở tầng `TemplateMatcher`
+   (không phải lỗi ở `TemplateMatcher` - triệu chứng "Excel không ghi
+   nhận dữ liệu nào" bắt nguồn từ đây).
+
+   Giải pháp: sau khi chuẩn hoá góc về khoảng chuẩn, nếu `abs(angle) >
+   DESKEW_MAX_ANGLE` -> coi là artifact của thuật toán (không phải
+   nghiêng thật), trả `0.0` (bỏ qua xoay). Hoá đơn scan văn phòng hiếm
+   khi nghiêng thật quá 10° - góc lớn hơn gần như chắc chắn là nhầm lẫn
+   của `minAreaRect`, không phải nghiêng thật.
+
+Đây là giới hạn cố hữu đã biết của kỹ thuật minAreaRect-toàn-trang khi
+áp dụng cho tài liệu nhiều khối, không phải lỗi implementation - cùng
+loại phát hiện với gap-based merge (ADR-044)/section collision
+(ADR-045): phát hiện qua chạy thật, không thấy được qua review tĩnh.
+
+Confirmed trong implementation: `core/ocr_engine.py::OCREngine._estimate_skew_angle()`,
+`core/constants.py::OCR.DESKEW_MAX_ANGLE`.
+
+------------------------------------------------------------------------
+
+## ADR-050 --- app.log Ghi Đè Mỗi Lần Chạy (Amend ADR-040)
+
+**Status:** Accepted (amends ADR-040)
+
+`ADR-040` quy định `logs/app.log` **tích luỹ** qua các lần chạy
+(`FileHandler` append mặc định, chủ đích giữ lịch sử đầy đủ). Hành vi
+này được đổi thành **ghi đè mỗi lần chạy** (giống `reports/Report.txt`
+đã có từ đầu).
+
+**Lý do đổi:** log tích luỹ qua nhiều lần chạy khiến file phình to theo
+thời gian và gây khó đọc log của lần chạy gần nhất - đây là chi phí vận
+hành thực tế phát sinh sau khi dùng thử, không phải lỗi thiết kế ban
+đầu.
+
+**Lưu ý:** điều này làm mất đi lý do ban đầu của ADR-040 khi tách 2 kênh
+output (`app.log` cho dev/admin tích luỹ dài hạn vs `report.txt` cho
+end-user ghi đè mỗi lần) - nay cả 2 kênh đều ghi đè, chỉ còn khác nhau ở
+đối tượng đọc (dev/admin vs end-user) và mức độ chi tiết (log kỹ thuật
+per-file vs summary Excel), không còn khác nhau ở vòng đời file. Ghi
+nhận để cân nhắc nếu sau này cần truy vết lịch sử nhiều lần chạy (sẽ cần
+cơ chế khác, ví dụ log xoay vòng theo timestamp - chưa có kế hoạch,
+chưa cần quyết định ngay).
+
+Confirmed trong implementation: `utils/logger.py::_configure_root()`.
+
+------------------------------------------------------------------------

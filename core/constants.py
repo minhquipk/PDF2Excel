@@ -96,6 +96,9 @@ class OCR:
     # Góc nghiêng tối thiểu (độ) để coi là "nghiêng thật", tránh xoay theo
     # nhiễu đo góc khi trang gần như đã thẳng.
     DESKEW_MIN_ANGLE = 0.5
+    # góc vượt ngưỡng này -> coi là artifact của thuật toán
+    # (minAreaRect nhầm khung trang A4), không phải nghiêng thật -> bỏ qua
+    DESKEW_MAX_ANGLE = 10.0
 
     # Màu nền lấp vào phần biên trống sau khi xoay (giữ nguyên kích thước
     # canvas gốc). Trắng (255) vì nền hoá đơn/tài liệu văn phòng luôn trắng.
@@ -170,12 +173,12 @@ class TemplateMatching:
     # Dung sai gom WordToken vào cùng 1 "dòng" theo trục y_center (tỉ lệ
     # normalized_bbox [0.0, 1.0]). 2 token có |y_center_a - y_center_b|
     # <= LINE_Y_TOLERANCE được coi là cùng dòng.
-    LINE_Y_TOLERANCE = 0.02
+    LINE_Y_TOLERANCE = 0.01
 
     # Khoảng cách ngang tối đa (tỉ lệ [0.0, 1.0]) giữa 2 token liên tiếp
     # trong cùng dòng để được gộp vào cùng 1 cụm từ (candidate phrase) khi
     # Key Matching. Gap lớn hơn ngưỡng này coi như 2 "trường" khác nhau.
-    WORD_GAP_TOLERANCE = 0.03
+    WORD_GAP_TOLERANCE = 0.02
 
     # Số từ tối đa trong 1 cụm Key Token sinh ra bằng sliding window.
     # VD: "tổng cộng tiền thanh toán" = 4 từ -> cần MAX_KEY_WORDS >= 4.

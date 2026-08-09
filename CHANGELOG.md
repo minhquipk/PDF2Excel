@@ -875,3 +875,80 @@ PDF gốc.
     (thiếu key → `KeyError`, xử lý như lỗi schema khác theo ADR-031).
 
 ------------------------------------------------------------------------
+
+## 2026-08-08 / 2026-08-09
+
+### First Real UI Run
+
+- Thực hiện lượt chạy UI thật đầu tiên (Input Folder -> Start ->
+  Report) qua ứng dụng thật, hoàn thành bước 3 trong kế hoạch 5 bước ở
+  PROJECT_CONTEXT.md §15 (trước đó chỉ verify qua script sandbox).
+
+### OCR Engine — Real Backend (Thay thế Mock, ADR-013)
+
+Xem ARCHITECTURE_DECISIONS.md ADR-047 (lịch sử lựa chọn đầy đủ: PaddleOCR
+-> RapidOCR -> Tesseract), ADR-048 (RGB render), ADR-049 (deskew),
+ADR-050 (app.log). Tóm tắt các thay đổi cuối cùng còn lại trong source:
+
+#### Added
+- `core/ocr_engine.py`: implement thật bằng Tesseract 5.x + tessdata_best
+  (qua `pytesseract`). Fail-fast kiểm tra `vie.traineddata` tồn tại tại
+  `TESSDATA_DIR`. Tự triển khai deskew (cv2, giữ nguyên canvas, ngưỡng
+  `DESKEW_MIN_ANGLE`/`DESKEW_MAX_ANGLE`).
+- `config.py`: thêm `TESSDATA_DIR` (`resources/tessdata_best/`).
+- `core/constants.py::OCR`: viết lại cho Tesseract (`LANG="vie"`,
+  `PSM=3`, `OEM=3`, `DESKEW_MIN_ANGLE=0.5`, `DESKEW_MAX_ANGLE=10.0`).
+- `requirements.txt`: `pytesseract==0.3.13`.
+- `core/models.py::PageImage`: thêm field `channels: int = 3`.
+
+#### Changed
+- `core/pdf_reader.py::_render_page_image()`: `fitz.csGRAY` ->
+  `fitz.csRGB` (ADR-048).
+- `core/constants.py::Image.COLORSPACE`: `"gray"` -> `"rgb"`.
+
+#### Removed (không còn trong source cuối cùng, nhưng ghi nhận đã thử qua)
+- PaddleOCR-based `ocr_engine.py` (loại bỏ do xung đột `paddlepaddle`
+  PIR - GitHub Issue #18162).
+- RapidOCR-based `ocr_engine.py` (loại bỏ do chất lượng nhận dạng tiếng
+  Việt kém - xác nhận qua debug thật, không phải bug code).
+
+### Bug Fixes phát sinh trong quá trình triển khai (đã sửa)
+
+- RapidOCR: `Det.model_type`/`Rec.model_type` phải là `Enum`
+  (`ModelType`), không phải string - sửa lỗi
+  `TypeError: The value of Det.model_type must be Enum Type.`
+- RapidOCR: `onnxruntime` không được khai báo dependency chính thức -
+  thêm dòng riêng vào `requirements.txt`; hạ version `1.24.4` ->
+  `1.23.2` do không có wheel cho macOS Intel.
+- RapidOCR: lỗi lazy loading tự triển khai (`recognize()` gọi thẳng
+  `self._ocr(...)` thay vì `self._get_ocr()(...)`) - sửa
+  `TypeError: 'NoneType' object is not callable`.
+- Tesseract: `_estimate_skew_angle()` nhầm trang A4 dọc thành góc
+  nghiêng ~90° (minAreaRect toàn trang không phù hợp tài liệu nhiều
+  khối) - gây `_deskew` xoay ngang toàn trang, làm hỏng vị trí mọi
+  `WordToken`, khiến `TemplateMatcher.select_template()` thất bại toàn
+  bộ (triệu chứng ban đầu tưởng là lỗi ở Parser/TemplateMatcher, thực
+  chất bắt nguồn từ OCREngine). Sửa bằng `DESKEW_MAX_ANGLE=10.0` (ADR-049).
+
+### Known Issue mới phát hiện (chưa sửa, ghi nhận)
+
+- `ui/worker.py::Worker._format_note()` chọn warning đầu tiên theo thứ
+  tự rule chạy trong `PDFDetector._evaluate_rules()` (luôn là
+  `text_coverage`), không phải warning liên quan nhất đến quyết định
+  cuối cùng - có thể hiển thị cảnh báo "bằng chứng yếu" (VD "Absence of
+  text alone does not prove OCR is required") cạnh 1 kết luận High
+  confidence, gây cảm giác mâu thuẫn dù dữ liệu không sai. Chưa sửa,
+  chờ thảo luận riêng (ngoài phạm vi phiên OCR này).
+
+### UI / Logging Behavior Changes (đã áp dụng, ghi nhận theo mô tả -
+### CHƯA verify qua source thật, xem ghi chú)
+
+- `utils/logger.py`: `app.log` đổi từ tích luỹ (append) sang ghi đè mỗi
+  lần chạy (ADR-050, amend ADR-040).
+- `models/processing_table_model.py`: hiển thị kết quả trên UI
+  (Processing Status) đổi từ append sang **prepend** (kết quả mới nhất
+  hiển thị đầu bảng thay vì cuối bảng).
+- Elapsed/ETA: đã hoàn thiện (trước đó là Known Issue "not implemented"
+  từ nhiều phiên trước - xem PROJECT_CONTEXT.md §14).
+
+------------------------------------------------------------------------

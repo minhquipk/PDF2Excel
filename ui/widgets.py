@@ -184,10 +184,9 @@ class ProgressWidget(BaseWidget):
         self,
         processed: int,
         total: int,
-        elapsed: str = Progress.TIME_PLACEHOLDER,
         eta: str = Progress.TIME_PLACEHOLDER,
     ) -> None:
-        """Cập nhật toàn bộ thông tin tiến trình."""
+        """Cập nhật processed/total/percent/eta. Elapsed được cập nhật riêng qua update_elapsed()."""
         percent = 0
 
         if total > 0:
@@ -206,9 +205,11 @@ class ProgressWidget(BaseWidget):
             UIText.PROGRESS_PERCENT_FORMAT.format(percent=percent)
         )
 
-        self.lbl_elapsed.setText(elapsed)
-
         self.lbl_eta.setText(eta)
+
+    def update_elapsed(self, elapsed: str) -> None:
+        """Cập nhật chỉ nhãn elapsed — được gọi từ QTimer mỗi giây."""
+        self.lbl_elapsed.setText(elapsed)
 
     def clear(self):
 

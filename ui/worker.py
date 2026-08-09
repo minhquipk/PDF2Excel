@@ -1,4 +1,4 @@
-from __future__ import annotations
+import time
 from pathlib import Path
 from typing import Optional
 from PySide6.QtCore import QObject, Signal, Slot
@@ -86,19 +86,63 @@ class Worker(QObject):
     def report_path(self) -> Optional[Path]:
         return self._report_path
 
+    @staticmethod
+    def _format_time(seconds: float) -> str:
+        """Format số giây thành chuỗi HH:MM:SS."""
+        if seconds < 0 or seconds > 86400 * 7:
+            return "--:--:--"
+        total_seconds = int(seconds)
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
     def process(self) -> None:
         pdf_files = sorted(self._input_folder.rglob("*.pdf"))
         total = len(pdf_files)
+
+        start_time = time.time()
+        avg_digital_time = 0.15
+        avg_ocr_time = 2.0
+        digital_count = 0
+        ocr_count = 0
 
         for index, pdf_file in enumerate(pdf_files, start=1):
             if self._cancel_requested:
                 self.cancelled.emit()
                 return
 
+            file_start = time.time()
             result = self._process_pdf(pdf_file)
+            file_duration = time.time() - file_start
+
+            if result.pdf_type == PDFType.DIGITAL:
+                digital_count += 1
+                avg_digital_time = 0.7 * avg_digital_time + 0.3 * file_duration
+            else:
+                ocr_count += 1
+                avg_ocr_time = 0.7 * avg_ocr_time + 0.3 * file_duration
+
+            elapsed_seconds = time.time() - start_time
+            elapsed_str = self._format_time(elapsed_seconds)
+
+            remaining_files = total - index
+            if remaining_files > 0:
+                processed_so_far = digital_count + ocr_count
+                ocr_ratio = ocr_count / processed_so_far if processed_so_far > 0 else 0.5
+
+                est_remaining_ocr = remaining_files * ocr_ratio
+                est_remaining_digital = remaining_files * (1.0 - ocr_ratio)
+
+                eta_seconds = (est_remaining_digital * avg_digital_time) + (
+                    est_remaining_ocr * avg_ocr_time
+                )
+                eta_str = self._format_time(eta_seconds)
+            else:
+                eta_str = "00:00:00"
+
             self._results.append(result)
             self.file_processed.emit(result)
-            self.progress.emit(index, total, "--:--:--", "--:--:--")
+            self.progress.emit(index, total, elapsed_str, eta_str)
 
         self._write_excel()
         self.finished.emit()
