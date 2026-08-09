@@ -1,21 +1,29 @@
-"""OCR engine thật, dùng RapidOCR (ONNX Runtime backend, không phụ thuộc
-paddlepaddle).
+"""OCR engine thật, dùng Tesseract 5.x + tessdata_best (qua pytesseract).
 
 Thay thế Mock (ADR-013: Mock First -> Replace Mock). Giữ nguyên contract
 đã có với Extractor (ADR-024/025): nhận PageImage, trả về raw, chưa
 normalize - Extractor vẫn là nơi duy nhất chuẩn hoá hình học.
+
+Lưu ý triển khai: Tesseract là binary hệ thống, KHÔNG cài qua pip - phải
+tự cài riêng trên máy (VD `brew install tesseract` trên macOS). File
+vie.traineddata (tessdata_best, độ chính xác cao hơn hẳn tessdata mặc
+định của hệ điều hành) cũng phải tự tải và đặt vào TESSDATA_DIR
+(xem config.py) - không đi kèm sẵn khi cài Tesseract qua trình quản lý
+gói hệ thống.
 """
 
 from __future__ import annotations
 import cv2
 import numpy as np
-from rapidocr import RapidOCR as _RapidOCR
+import pytesseract
+from PIL import Image
+from config import TESSDATA_DIR
 from core.constants import OCR
 from core.models import PageImage
 
 
 class OCREngine:
-    """Nhận dạng chữ trên page_image đã render (RapidOCR PP-OCRv6 pipeline).
+    """Nhận dạng chữ trên page_image đã render (Tesseract 5.x, LSTM/tessdata_best).
 
     Symmetric với PDFReader: trả về raw, un-normalized output. Toàn bộ
     chuẩn hoá toạ độ vẫn là trách nhiệm duy nhất của Extractor.
@@ -27,15 +35,17 @@ class OCREngine:
     """
 
     def __init__(self) -> None:
-        # Khởi tạo model 1 lần duy nhất - tái sử dụng cho toàn bộ batch
-        # (đối xứng cách Extractor.__init__ tạo OCREngine() một lần).
-        self._ocr = _RapidOCR(
-            params={
-                "Det.model_type": OCR.MODEL_TYPE,
-                "Rec.lang_type": OCR.REC_LANG,
-                "Rec.model_type": OCR.MODEL_TYPE,
-            }
-        )
+        traineddata = TESSDATA_DIR / f"{OCR.LANG}.traineddata"
+        if not traineddata.exists():
+            raise FileNotFoundError(
+                f"Không tìm thấy '{traineddata}'. Tải file tại "
+                f"https://github.com/tesseract-ocr/tessdata_best/raw/main/{OCR.LANG}.traineddata "
+                f"và đặt vào '{TESSDATA_DIR}'."
+            )
+
+        # Cấu hình Tesseract dựng 1 lần, tái sử dụng cho mọi lần gọi
+        # recognize() - không đổi giữa các trang/PDF trong cùng batch.
+        self._config = f'--tessdata-dir "{TESSDATA_DIR}" --psm {OCR.PSM} --oem {OCR.OEM}'
 
     def recognize(
         self,
@@ -48,19 +58,29 @@ class OCREngine:
         không đổi kể cả sau khi deskew nội bộ (canvas cố định).
         """
         image = self._to_numpy_array(page_image)
-        image = self._to_bgr(image)
         image = self._deskew(image)
 
-        result = self._ocr(image, use_cls=OCR.USE_CLS)
-        if result is None or result.boxes is None or len(result.boxes) == 0:
-            return ()
+        pil_image = Image.fromarray(image)
+        data = pytesseract.image_to_data(
+            pil_image,
+            lang=OCR.LANG,
+            config=self._config,
+            output_type=pytesseract.Output.DICT,
+        )
 
         words: list[tuple[float, float, float, float, str, float]] = []
-        for quad, text, score in zip(result.boxes, result.txts, result.scores):
-            xs = quad[:, 0]
-            ys = quad[:, 1]
-            x0, y0, x1, y1 = float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())
-            words.append((x0, y0, x1, y1, text, float(score)))
+        for i in range(len(data["text"])):
+            text = data["text"][i].strip()
+            if not text:
+                continue
+
+            confidence = float(data["conf"][i])
+            if confidence < 0:
+                continue
+
+            left, top = float(data["left"][i]), float(data["top"][i])
+            width, height = float(data["width"][i]), float(data["height"][i])
+            words.append((left, top, left + width, top + height, text, confidence / 100.0))
 
         return tuple(words)
 
@@ -75,27 +95,12 @@ class OCREngine:
         return array.reshape(page_image.height, page_image.width, page_image.channels)
 
     @staticmethod
-    def _to_bgr(image: np.ndarray) -> np.ndarray:
-        """Đổi RGB (nguồn PageImage) sang BGR.
-
-        RapidOCR chỉ tự convert RGB->BGR khi nhận str/Path/bytes/PIL.Image
-        (đọc qua Pillow); với numpy.ndarray truyền thẳng, nó GIẢ ĐỊNH mảng
-        đã là BGR và không convert gì (xem rapidocr/utils/load_image.py::
-        LoadImage.convert_img()). Không tự bù bước này sẽ khiến kênh Đỏ/
-        Xanh dương bị hoán đổi ngầm bên trong RapidOCR - đi ngược lý do
-        PageImage giữ RGB (bảo toàn màu thật: con dấu đỏ, chữ ký mực màu).
-        """
-        if image.ndim != 3 or image.shape[2] != 3:
-            return image
-        return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-
-    @staticmethod
     def _deskew(image: np.ndarray) -> np.ndarray:
         """Làm thẳng trang bị nghiêng nhẹ, giữ nguyên kích thước canvas gốc.
 
         Chỉ xử lý nghiêng vài độ (skew do đặt giấy lệch khi scan) - KHÔNG
-        xử lý lật ngược 0/180 độ (việc đó do use_cls của RapidOCR đảm
-        nhiệm, độc lập với bước này). image ở đây đã là BGR (sau _to_bgr).
+        xử lý lật ngược 0/180 độ (việc đó do dữ liệu osd.traineddata của
+        Tesseract đảm nhiệm ngầm trong PSM=3, độc lập với bước này).
         """
         angle = OCREngine._estimate_skew_angle(image)
         if abs(angle) < OCR.DESKEW_MIN_ANGLE:
@@ -128,7 +133,7 @@ class OCREngine:
         nội dung -> trả 0.0 (không xoay).
         """
         gray = (
-            cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+            cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if image.ndim == 3 else image
         )
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 

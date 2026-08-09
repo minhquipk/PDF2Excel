@@ -72,26 +72,27 @@ class Image:
 
 class OCR:
     """
-    Cấu hình cho OCREngine (RapidOCR, backend onnxruntime).
+    Cấu hình cho OCREngine (Tesseract 5.x + tessdata_best).
     Toàn bộ giá trị dưới đây là mặc định ban đầu, CẦN TINH CHỈNH khi có
-    dữ liệu PDF Scanned/Hybrid thật (đối xứng cách TemplateMatching đã ghi
-    chú - xem SESSION_SUMMARIES.md, Session OCR).
+    dữ liệu PDF Scanned/Hybrid thật đa dạng hơn (đối xứng cách
+    TemplateMatching đã ghi chú - xem SESSION_SUMMARIES.md, phiên OCR).
     """
-    # Ngôn ngữ nhận dạng (Rec.lang_type). Hard-code v1; UI cho chọn ngôn
-    # ngữ dự kiến v2 (xem CHANGELOG.md, Future Improvements).
-    REC_LANG = "vi"
+    # Ngôn ngữ nhận dạng (mã ISO 639-2 theo quy ước tessdata, "vie" không
+    # phải "vi"). Hard-code v1; UI cho chọn ngôn ngữ dự kiến v2 (xem
+    # CHANGELOG.md, Future Improvements).
+    LANG = "vie"
 
-    # Model size: PP-OCRv6 "medium"/"small" đều hỗ trợ "vi" (đã verify qua
-    # tài liệu RapidOCR Model List). "medium" ưu tiên độ chính xác hơn tốc
-    # độ - phù hợp hoá đơn (ít trang/lần, không cần xử lý hàng loạt tốc độ
-    # cao như OCR streaming).
-    MODEL_TYPE = "medium"
+    # Page Segmentation Mode: 3 = Fully automatic page segmentation, không
+    # giả định layout (mặc định của Tesseract) - phù hợp hoá đơn vì bố cục
+    # có nhiều khối (header/bảng/chữ ký) không đồng nhất.
+    PSM = 3
 
-    # Bộ phân loại hướng dòng chữ 0/180 độ (tương đương use_angle_cls của
-    # PaddleOCR). KHÔNG xử lý trang nghiêng vài độ - xem DESKEW_* bên dưới.
-    USE_CLS = True
+    # OCR Engine Mode: 3 = mặc định của Tesseract 5.x, chỉ dùng LSTM
+    # (kiến trúc mà tessdata_best được huấn luyện cho) - không dùng engine
+    # Legacy cũ (kém chính xác hơn nhiều, chủ yếu giữ để tương thích ngược).
+    OEM = 3
 
-    # --- Deskew (làm thẳng trang trước khi đưa vào RapidOCR) ---
+    # --- Deskew (làm thẳng trang trước khi đưa vào Tesseract) ---
     # Góc nghiêng tối thiểu (độ) để coi là "nghiêng thật", tránh xoay theo
     # nhiễu đo góc khi trang gần như đã thẳng.
     DESKEW_MIN_ANGLE = 0.5
@@ -169,12 +170,12 @@ class TemplateMatching:
     # Dung sai gom WordToken vào cùng 1 "dòng" theo trục y_center (tỉ lệ
     # normalized_bbox [0.0, 1.0]). 2 token có |y_center_a - y_center_b|
     # <= LINE_Y_TOLERANCE được coi là cùng dòng.
-    LINE_Y_TOLERANCE = 0.01
+    LINE_Y_TOLERANCE = 0.02
 
     # Khoảng cách ngang tối đa (tỉ lệ [0.0, 1.0]) giữa 2 token liên tiếp
     # trong cùng dòng để được gộp vào cùng 1 cụm từ (candidate phrase) khi
     # Key Matching. Gap lớn hơn ngưỡng này coi như 2 "trường" khác nhau.
-    WORD_GAP_TOLERANCE = 0.02
+    WORD_GAP_TOLERANCE = 0.03
 
     # Số từ tối đa trong 1 cụm Key Token sinh ra bằng sliding window.
     # VD: "tổng cộng tiền thanh toán" = 4 từ -> cần MAX_KEY_WORDS >= 4.

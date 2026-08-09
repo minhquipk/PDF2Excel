@@ -17,3 +17,7 @@ EXCEL_MAPPING_PATH = BASE_DIR / "resources" / "excel_mapping.json"
 LOG_DIR = BASE_DIR / "logs"
 # Thư mục chứa report.txt (ReportWriter).
 REPORTS_DIR = BASE_DIR / "reports"
+# Thư mục chứa tessdata_best (vie.traineddata) cho OCREngine (Tesseract).
+# Đóng gói cùng project - KHÔNG dùng tessdata mặc định của hệ điều hành
+# (chất lượng thấp hơn, xem CHANGELOG.md/SESSION_SUMMARIES.md phiên OCR).
+TESSDATA_DIR = BASE_DIR / "resources" / "tessdata_best"
