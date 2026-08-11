@@ -66,7 +66,7 @@ class Report:
 
 class Image:
     """Cấu hình render ảnh trang PDF."""
-    DPI = 300
+    DPI = 450
     COLORSPACE = "rgb"
 
 
@@ -103,6 +103,24 @@ class OCR:
     # Màu nền lấp vào phần biên trống sau khi xoay (giữ nguyên kích thước
     # canvas gốc). Trắng (255) vì nền hoá đơn/tài liệu văn phòng luôn trắng.
     DESKEW_FILL_VALUE = 255
+
+    # --- Preprocess (tăng contrast + sharpen trước khi đưa vào Tesseract,
+    # chạy SAU _deskew() - xem core/ocr_engine.py::_preprocess()) ---
+
+    # CLAHE (Contrast Limited Adaptive Histogram Equalization) - tăng
+    # contrast cục bộ, tránh khuếch đại nhiễu ở vùng chi tiết nhỏ (VD
+    # đuôi dấu phẩy) so với equalizeHist toàn cục.
+    PREPROCESS_CLAHE_CLIP_LIMIT = 2.0
+    PREPROCESS_CLAHE_TILE_GRID_SIZE = (8, 8)
+
+    # Unsharp masking - làm sắc nét cạnh ký tự trước OCR.
+    # sigmaX nhỏ (bán kính hẹp) để tránh lan halo sang vùng nét mảnh.
+    PREPROCESS_SHARPEN_SIGMA = 1.0
+    # amount = mức tăng cường (0.0-1.0). Bắt đầu thận trọng (0.3) vì
+    # amount cao có nguy cơ tạo ringing artifact quanh nét mảnh (đuôi
+    # dấu phẩy), có thể LÀM XẤU THÊM đúng vấn đề đang giải quyết thay
+    # vì cải thiện - cần tăng dần qua thực nghiệm, không bắt đầu cao.
+    PREPROCESS_SHARPEN_AMOUNT = 0.3
 
 
 class Progress:
@@ -197,3 +215,13 @@ class TemplateMatching:
     # Áp dụng RIÊNG cho Section (field thường không có cơ chế này) - quyết
     # định trong phiên thảo luận Nhóm 3.1/3.2 (Section).
     SECTION_TIE_MARGIN = 10
+
+
+class NumberRepair:
+    """
+    Cấu hình cho ValueConverter._normalize_number_separators() (fallback
+    heuristic khi OCR nhầm lẫn dấu ',' và '.' trong chuỗi số). Giá trị
+    ban đầu là ước lượng, dự kiến cho phép người dùng tuỳ chỉnh theo loại
+    hóa đơn ở version sau.
+    """
+    DECIMAL_TAIL_MAX_LENGTH = 3

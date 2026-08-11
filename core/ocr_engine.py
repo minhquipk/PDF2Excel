@@ -59,6 +59,7 @@ class OCREngine:
         """
         image = self._to_numpy_array(page_image)
         image = self._deskew(image)
+        image = self._preprocess(image)
 
         pil_image = Image.fromarray(image)
         data = pytesseract.image_to_data(
@@ -123,6 +124,30 @@ class OCREngine:
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=border_value,
         )
+
+    @staticmethod
+    def _preprocess(image: np.ndarray) -> np.ndarray:
+        """Tăng contrast + sharpen trước OCR để cải thiện nhận dạng ký tự nhỏ."""
+        # Chuyển sang grayscale nếu chưa phải
+        gray = (
+            cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            if image.ndim == 3
+            else image
+        )
+        # Tăng contrast cục bộ (CLAHE — tốt hơn equalizeHist toàn cục
+        # vì hoá đơn thường có vùng sáng/tối không đều)
+        clahe = cv2.createCLAHE(clipLimit=OCR.PREPROCESS_CLAHE_CLIP_LIMIT,
+                                tileGridSize=OCR.PREPROCESS_CLAHE_TILE_GRID_SIZE)
+        enhanced = clahe.apply(gray)
+        # Unsharp masking nhẹ để làm sắc nét cạnh ký tự
+        blur = cv2.GaussianBlur(enhanced, (0, 0), sigmaX=OCR.PREPROCESS_SHARPEN_SIGMA)
+        weight_original = 1.0 + OCR.PREPROCESS_SHARPEN_AMOUNT
+        weight_blur = -OCR.PREPROCESS_SHARPEN_AMOUNT
+        sharpened = cv2.addWeighted(enhanced, weight_original, blur, weight_blur, 0)
+        # Trả về 3 kênh nếu input là RGB (để đồng nhất với downstream)
+        if image.ndim == 3:
+            return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB)
+        return sharpened
 
     @staticmethod
     def _estimate_skew_angle(image: np.ndarray) -> float:

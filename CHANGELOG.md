@@ -6,10 +6,29 @@ The format is chronological and focuses on architectural milestones
 rather than Git commits.
 
 ### Fixed
--   Chuyển `OCREngine` sang cơ chế Lazy Loading (`core/ocr_engine.py`) và tắt các bộ tiền xử lý xoay/nắn trang thừa của PaddleX (`core/constants.py`), giải quyết triệt để lỗi crash khi bật giao diện UI (`main_window.py`) và lỗi PIR attribute `strides` trong PaddlePaddle 3.0.0 (ADR-046).
+- `value_converter.py`: `_to_decimal()` xử lý hậu tố đơn vị tiền tệ VND
+    dính liền chuỗi số (7 biến thể: vnd/VND/vnđ/VNĐ/₫/đ/Đ), phát hiện qua
+    debug thực nghiệm trên batch PDF Scanned (~15% data thiếu field
+    subtotal/vat_amount/total_amount). Cũng nới `value_pattern` tương ứng
+    trong `sample_invoice_v1.json` (v3->v4). Xem ADR-051.
+-   `value_converter.py`: thêm cơ chế tự phục hồi khi OCR đọc nhầm lẫn
+    dấu ',' và '.' trong chuỗi số (silent corruption - Decimal() có thể
+    "parse thành công" nhưng sai trị số). Heuristic dựa trên 6 dấu hiệu
+    cấu trúc chuỗi (vị trí dấu, không dựa loại ký tự). Xem ADR-052.
+-   `ocr_engine.py`: thêm bước `_preprocess()` (CLAHE + Unsharp Mask)
+    chạy sau `_deskew()`, kết hợp tăng `Image.DPI` 300->450, cải thiện
+    tỷ lệ nhầm lẫn ',' / '.' xuống dưới 0.5% (từ mức quan sát ban đầu).
+    Xem ADR-053.
 
 ### Changed
--   Bổ sung `paddleocr==3.7.0`, `numpy==2.5.1`, `opencv-contrib-python==4.10.0.84` vào `requirements.txt` giải quyết cảnh báo thiếu dependency của IDE tại `core/ocr_engine.py`.
+-   `core/constants.py`: thêm class `NumberRepair` (`DECIMAL_TAIL_MAX_LENGTH`);
+    `OCR` bổ sung 4 hằng số Preprocess (`PREPROCESS_CLAHE_CLIP_LIMIT`,
+    `PREPROCESS_CLAHE_TILE_GRID_SIZE`, `PREPROCESS_SHARPEN_SIGMA`,
+    `PREPROCESS_SHARPEN_AMOUNT`); `Image.DPI` 300 -> 450.
+-   Đánh giá lại lý do giữ `PageImage` render RGB (ADR-048 gốc lập luận
+    theo bối cảnh PaddleOCR) cho phù hợp với Tesseract - vẫn giữ RGB
+    nhưng đổi lý do sang tính bất khả nghịch của chuyển đổi màu, không
+    còn vì lợi ích trực tiếp cho OCR. Xem ADR-054 (amend ADR-048).
 
 ### Next
 
@@ -64,6 +83,19 @@ rather than Git commits.
     Value merge (ADR-044) trên nhiều mẫu hóa đơn thật hơn - hiện chỉ
     verify trên 1 PDF test, điều kiện dừng "token kết thúc bằng `:`"
     chưa chắc đủ cho mọi layout.
+- (giữ nguyên các mục đã có, bổ sung thêm bên dưới)
+-   **v2.0 planning:** DPI thích ứng theo khổ giấy/cỡ font (400 DPI cho
+    font >10pt/A4 chuẩn, 600 DPI cho font <8pt/A5 hoặc A4 có bảng chỉ số
+    phụ) thay vì `Image.DPI` cố định toàn cục - cho phép người dùng chọn
+    khổ giấy ở UI. Chưa thiết kế chi tiết (xem ARCHITECTURE_DECISIONS.md
+    ADR-053, PROJECT_CONTEXT.md §18).
+-   **v2.0 planning:** tiếp tục cải thiện tỷ lệ nhầm lẫn ',' / '.' (hiện
+    dưới 0.5%, chưa về 0%) - đặc biệt trường hợp OCR làm mất hẳn dấu
+    phân cách (chưa có giải pháp, xem ADR-052) và ranh giới "cụm cuối
+    đúng 3 chữ số" (rủi ro lý thuyết còn tồn, xem ADR-052).
+-   Tinh chỉnh `NumberRepair.DECIMAL_TAIL_MAX_LENGTH` (hiện = 3,
+    placeholder) và các hằng số `OCR.PREPROCESS_*` khi có thêm dữ liệu
+    PDF Scanned đa dạng hơn.
 
 ------------------------------------------------------------------------
 

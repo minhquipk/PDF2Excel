@@ -1136,3 +1136,235 @@ chưa cần quyết định ngay).
 Confirmed trong implementation: `utils/logger.py::_configure_root()`.
 
 ------------------------------------------------------------------------
+
+## ADR-051 --- ValueConverter Strip Hậu Tố Đơn Vị Tiền Tệ VND Trước Khi Convert Decimal
+
+**Status:** Accepted
+
+Phát hiện qua debug thực nghiệm trên batch PDF Scanned thật (Report.txt:
+13/~90 file, ~15% data, thiếu đều 3 field subtotal/vat_amount/total_amount).
+Debug trực tiếp TemplateMatcher.extract_fields() (xem debug.txt) xác nhận:
+Windowing hoạt động đúng (candidate token nằm đúng trong window), nhưng
+_select_best_value() trả None vì value_pattern: "^[0-9.,]+$" không khớp
+token OCR dạng "4,842,303VND" - Tesseract gộp đơn vị tiền tệ dính liền số
+thành 1 token duy nhất khi bản scan không có khoảng trắng rõ ràng.
+
+Đây là lỗi cùng loại với ADR-043 (% dính liền vat_rate), nhưng chặn sớm
+hơn: ở tầng value_pattern (TemplateMatcher), trước khi ValueConverter kịp
+chạy - không chỉ là vấn đề của _to_decimal().
+
+Giải pháp - 2 lớp, đối xứng nhau:
+
+1. value_pattern của 3 field tiền tệ trong sample_invoice_v1.json (v3->v4)
+   nới để chấp nhận hậu tố tiền tệ tùy chọn:
+   ^[0-9.,]+\s*(?:(?i:vn[dđ])|₫|[đĐ])?$
+2. ValueConverter._to_decimal() gọi _strip_currency_suffix() mới, strip
+   hậu tố trước khi Decimal() parse.
+
+7 biến thể được xử lý, chia 2 nhóm theo mức độ rủi ro:
+
+- vnd, VND, vnđ, VNĐ, ₫ - strip vô điều kiện (case-insensitive qua
+  .lower()), vì chuỗi ≥2 ký tự hoặc ký tự Unicode riêng biệt không thể là
+  1 phần hợp lệ khác của số Decimal.
+- đ, Đ (1 ký tự) - CHỈ strip khi ký tự liền trước là chữ số (0-9), không
+  strip vô điều kiện. Lý do: 1 ký tự chữ cái tiếng Việt đơn lẻ có rủi ro
+  trùng nội dung/nhiễu OCR khác cao hơn hẳn so với chuỗi dài hơn - cùng
+  lớp rủi ro với "key_tokens 1 từ" đã ghi nhận ở Session 2026-08-01/02
+  (Known Limitations), dù xảy ra ở bước khác (Value parsing, không phải
+  Key Matching).
+
+Rủi ro còn lại (ghi nhận minh bạch, không loại bỏ hoàn toàn): ràng buộc
+vị trí giảm đáng kể nhưng không triệt tiêu khả năng OCR noise tạo đúng 1
+ký tự đ/Đ ngay sau 1 chữ số hợp lệ không phải ký hiệu tiền - dẫn đến
+strip nhầm, sai lệch số âm thầm (không có warning, khác với field ra None
+được ghi nhận ở Report.txt qua ADR-032/033). Cùng nhóm rủi ro cố hữu đã
+ghi nhận ở ADR-044 (gap-based merge tràn field) / ADR-045 (section
+collision lý thuyết) - cần thêm dữ liệu thật đa dạng hơn để đánh giá tần
+suất.
+
+Verify: áp dụng patch, chạy lại đúng batch PDF từng tạo ra Report.txt gốc
+(13 dòng cảnh báo vat_amount/subtotal/total_amount) - PASS toàn bộ test
+case đang có.
+
+Confirmed trong implementation: core/value_converter.py::ValueConverter._strip_currency_suffix(),
+resources/templates/sample_invoice_v1.json (v4).
+
+------------------------------------------------------------------------
+
+## ADR-052 --- ValueConverter Tự Phục Hồi Số Bị OCR Đọc Nhầm Lẫn Dấu ',' và '.'
+
+**Status:** Accepted
+
+Phát hiện qua thực nghiệm tiếp theo ADR-051: sau khi xử lý hậu tố đơn vị
+tiền tệ, batch PDF Scanned vẫn còn <3% case bị OCR đọc nhầm lẫn dấu phân
+cách ',' <-> '.' trong chuỗi số. Đây là lỗi NGHIÊM TRỌNG hơn các lỗi
+trước (VND, %) vì thường KHÔNG gây Decimal() raise exception - chuỗi sau
+khi áp thousand_sep/decimal_sep vẫn đúng cú pháp Decimal nhưng SAI TRỊ SỐ
+(silent corruption, có thể lệch tới hàng nghìn lần), khác hẳn field ra
+None đã được Report.txt ghi nhận qua ADR-032/033.
+
+Giải pháp: ValueConverter._to_decimal() thêm bước kiểm tra cấu trúc
+chuỗi (_looks_ambiguous()) TRƯỚC khi áp thousand_sep/decimal_sep - độc
+lập với việc Decimal() có raise exception hay không, vì exception không
+phải tín hiệu đáng tin cậy cho loại lỗi này.
+
+6 dấu hiệu khả nghi (_looks_ambiguous(), dựa trên VỊ TRÍ dấu, không dựa
+loại ký tự - vì bản thân loại ký tự là điểm OCR hay đọc nhầm):
+
+1. Có cả 2 loại dấu ',' và '.' cùng xuất hiện, và dấu CUỐI CÙNG không
+   phải decimal_separator đã cấu hình trong template.
+2. decimal_separator đã cấu hình xuất hiện nhiều hơn 1 lần.
+3. Vi phạm quy tắc 3 chữ số: cụm chữ số không phải cụm đầu (và không
+   phải cụm cuối nếu cụm cuối là decimal) không có đúng 3 chữ số.
+4. Vị trí phi lý: dấu phân cách đứng ở đầu hoặc cuối chuỗi.
+5. Double punctuation: 2 dấu phân cách đứng liền nhau.
+6. Decimal Tail Length: phần sau dấu cuối (khi dấu cuối là
+   decimal_separator) dài hơn NumberRepair.DECIMAL_TAIL_MAX_LENGTH
+   (mặc định = 3) - nhiều khả năng thực ra là 1 nhóm nghìn bị đọc nhầm
+   thành decimal.
+
+Khi khả nghi, _normalize_number_separators() suy luận lại: nếu cụm cuối
+có độ dài hợp lý cho phần thập phân -> coi là decimal, còn lại strip
+làm thousand; ngược lại -> coi TOÀN BỘ là thousand separator, ưu tiên
+giữ đúng ĐỘ LỚN số hơn đoán sai vị trí thập phân (rủi ro đoán sai vị trí
+thập phân được đánh giá thấp hơn rủi ro sai lệch độ lớn số).
+
+Giới hạn đã biết, không giải quyết được (ghi nhận minh bạch):
+
+- Trường hợp cụm cuối có ĐÚNG 3 chữ số VÀ dấu cuối trùng ngẫu nhiên với
+  decimal_separator đã cấu hình (do đọc nhầm) - không đủ tín hiệu cấu
+  trúc để phân biệt với trường hợp hợp lệ thật (phần thập phân dài đúng
+  3 chữ số, dữ liệu VND đã xác nhận CÓ THỂ có phần lẻ, không giả định số
+  nguyên). Giữ nguyên hành vi cũ (không đoán) ở đúng ranh giới này.
+- Trường hợp OCR làm MẤT HẲN dấu phân cách (VD "4842303" liền khối,
+  không dấu vết vị trí) - không có cấu trúc nào để suy luận. Nếu chuỗi
+  liền khối vẫn đúng cú pháp Decimal, sẽ KHÔNG bị flag khả nghi và KHÔNG
+  raise exception -> có thể silent corruption tương tự nếu xảy ra. Chưa
+  ghi nhận qua thực nghiệm tại thời điểm ADR này được chấp thuận - cần
+  theo dõi qua dữ liệu thật tương lai, chưa có giải pháp.
+- NumberRepair.DECIMAL_TAIL_MAX_LENGTH = 3 là giá trị ước lượng ban đầu
+  (không có cơ sở xác định chính xác độ dài phần thập phân VND trong dữ
+  liệu thật) - dự kiến cho người dùng tuỳ chỉnh theo loại hóa đơn ở
+  version sau (xem PROJECT_CONTEXT.md §18).
+
+Verify: sau khi áp dụng kết hợp với ADR-053 (DPI + Preprocess), tỷ lệ
+lỗi nhầm lẫn ',' / '.' giảm từ mức quan sát ban đầu xuống dưới 0.5% trên
+batch thực nghiệm. Chưa về 0% - ghi nhận là hướng cải thiện tiếp tục ở
+v2.0 (xem PROJECT_CONTEXT.md §18), không coi là đã giải quyết triệt để.
+
+Confirmed trong implementation: core/value_converter.py::ValueConverter._looks_ambiguous(),
+_normalize_number_separators(), _split_number_groups(), _parse_plain_decimal();
+core/constants.py::NumberRepair.
+
+------------------------------------------------------------------------
+
+## ADR-053 --- OCR: Tăng DPI 300→450 & Thêm Bước Preprocess (CLAHE + Sharpen) Trước Tesseract
+
+**Status:** Accepted
+
+Cùng đợt điều tra với ADR-051/052 (Report.txt cho thấy ~15% data thiếu
+field tiền tệ trên PDF Scanned), phát hiện thêm: kể cả sau khi field
+được trích đúng vị trí, nội dung số đôi khi vẫn sai vì Tesseract đọc
+nhầm dấu ',' và '.' - nguyên nhân gốc một phần đến từ chất lượng ảnh đầu
+vào (DPI, độ tương phản/sắc nét), không chỉ do logic parse.
+
+**Thay đổi 1 - DPI 300 -> 450** (`core/constants.py::Image.DPI`):
+
+Mức 300 DPI là mức tối ưu cho độ chính xác OCR tổng thể theo các báo cáo
+hiệu năng phổ biến (Tesseract/ABBYY, khảo sát dải 1-600 DPI), nhưng các
+báo cáo đó đánh giá trên toàn bộ ký tự nói chung, không xét riêng các
+ký tự cực nhỏ như dấu ',' / '.' - đuôi dấu phẩy (điểm phân biệt duy nhất
+với dấu chấm) chỉ chiếm vài pixel ở 300 DPI, xấp xỉ ngưỡng nhiễu/
+anti-aliasing.
+
+Qua nhiều vòng thực nghiệm thực tế (không phải suy đoán lý thuyết), giá
+trị cuối cùng được xác nhận là **450 DPI** (khác đề xuất ban đầu 400 DPI
+- điều chỉnh dựa trên kết quả đo thật qua nhiều lần test, đúng tinh thần
+"chạy thật để verify" nhất quán trong dự án). Có thêm cơ sở tham chiếu
+từ tài liệu Tesseract/ABBYY: mức DPI phù hợp phụ thuộc cỡ font/khổ giấy
+- font >10pt (hóa đơn A4 chuẩn) phù hợp khoảng 400 DPI, font <8pt (hóa
+đơn A5 hoặc A4 có bảng chỉ số phụ chữ nhỏ) cần tới 600 DPI. Giá trị 450
+được chọn làm mức chung cho v1 (không phân biệt khổ giấy) - kế hoạch
+DPI thích ứng theo khổ giấy được ghi nhận cho v2.0 (xem
+PROJECT_CONTEXT.md §18).
+
+Đánh đổi đã biết: chi phí bộ nhớ/thời gian tăng theo diện tích
+(DPI² ~ (450/300)² ≈ 2.25x so với mức cũ), áp dụng cho MỌI trang của MỌI
+PDF (kể cả Digital-mode không bao giờ gọi OCR - do PDFReader render
+page_image trước khi PDFDetector quyết định mode, ADR-026). Chấp nhận
+đánh đổi này dựa trên kết quả thực nghiệm của người vận hành.
+
+**Thay đổi 2 - Preprocess trước Tesseract** (`OCREngine._preprocess()`,
+mới, chạy SAU `_deskew()`):
+
+- CLAHE (Contrast Limited Adaptive Histogram Equalization) tăng contrast
+  cục bộ - chọn thay vì equalizeHist toàn cục vì hoá đơn thường có vùng
+  sáng/tối không đều, và CLAHE giảm rủi ro khuếch đại nhiễu ở vùng chi
+  tiết nhỏ (đuôi dấu phẩy) so với cân bằng histogram toàn ảnh.
+- Unsharp masking làm sắc nét cạnh ký tự, sigma nhỏ (bán kính hẹp) để
+  tránh lan halo sang vùng nét mảnh; mức tăng cường (amount) khởi đầu ở
+  mức thận trọng vì amount cao có nguy cơ tạo ringing artifact quanh nét
+  mảnh - có thể LÀM XẤU THÊM chính vấn đề đang giải quyết thay vì cải
+  thiện.
+- Thứ tự gọi `_deskew()` trước `_preprocess()` được xác nhận qua nhiều
+  lần thực nghiệm thực tế: KHÔNG có sự khác biệt kết quả rõ ràng so với
+  thứ tự ngược lại. Giữ nguyên thứ tự deskew-trước (đã có sẵn trong
+  pipeline từ ADR-049) để không phát sinh thay đổi không cần thiết.
+- Toàn bộ tham số (`PREPROCESS_CLAHE_CLIP_LIMIT`,
+  `PREPROCESS_CLAHE_TILE_GRID_SIZE`, `PREPROCESS_SHARPEN_SIGMA`,
+  `PREPROCESS_SHARPEN_AMOUNT`) khai báo tường minh trong
+  `core/constants.py::OCR`, cùng loại "giá trị ước lượng ban đầu, cần
+  tinh chỉnh khi có dữ liệu thật đa dạng hơn" như `TemplateMatching.*`/
+  `OCR.DESKEW_*` đã có.
+
+Verify: kết hợp ADR-052 (heuristic sửa lỗi dấu) + ADR-053 (DPI 450 +
+Preprocess), tỷ lệ lỗi nhầm lẫn ',' / '.' giảm xuống dưới 0.5% trên
+batch thực nghiệm - PASS toàn bộ test case hiện có. Chưa về 0%, ghi nhận
+tiếp tục cải thiện ở v2.0.
+
+Confirmed trong implementation: core/constants.py::Image.DPI,
+core/constants.py::OCR (4 hằng số Preprocess mới),
+core/ocr_engine.py::OCREngine._preprocess().
+
+------------------------------------------------------------------------
+
+## ADR-054 --- Amend ADR-048: Lý Do Giữ RGB Điều Chỉnh Lại Cho Phù Hợp Với Tesseract
+
+**Status:** Accepted (amends ADR-048)
+
+ADR-048 (đổi PageImage sang render RGB thay vì Grayscale) được quyết
+định trong bối cảnh OCR engine tại thời điểm đó là PaddleOCR, với lý do
+"giữ màu thật giúp OCR tận dụng độ tương phản màu thật". Từ ADR-047, OCR
+engine đã chuyển hẳn sang Tesseract - cần đánh giá lại lý do này có còn
+đúng không.
+
+Về mặt kỹ thuật, Tesseract (kể cả LSTM/tessdata_best) tự quy đổi ảnh về
+grayscale/nhị phân ở bước xử lý nội bộ đầu tiên (nền tảng Leptonica),
+không có cơ chế học đặc trưng màu trong việc nhận diện ký tự như các
+detection model dạng CNN (VD PaddleOCR). A/B test thực tế trên bộ dữ
+liệu hiện có giữa GRAY và RGB không cho thấy khác biệt rõ ràng về độ
+chính xác nhận diện.
+
+**Quyết định: VẪN GIỮ RGB**, nhưng đổi lý do chính sang: tính bất khả
+nghịch của việc chuyển đổi. Grayscale -> RGB không khôi phục lại được
+thông tin màu đã mất, trong khi RGB -> Grayscale luôn thực hiện được ở
+bất kỳ điểm nào trong pipeline khi cần (VD `_estimate_skew_angle()` đã
+tự chuyển RGB->GRAY nội bộ). Về lâu dài, không thể dự đoán chắc chắn
+liệu có bước xử lý tương lai nào cần khai thác kênh màu riêng biệt hay
+không (VD: tách kênh đỏ để làm nổi bật con dấu/mực đỏ trước khi OCR) -
+giữ RGB ở tầng PDFReader bảo toàn tùy chọn này, đổi lại chấp nhận chi
+phí bộ nhớ ~3x/trang so với Grayscale (đã ghi nhận ở ADR-048 gốc).
+
+Lưu ý: `OCREngine._preprocess()` (ADR-053) hiện tại tự chuyển ảnh về
+grayscale nội bộ để xử lý CLAHE/sharpen, sau đó nhân bản lại 3 kênh
+giống hệt nhau nếu input là RGB - nghĩa là "RGB" thực tế đưa vào
+Tesseract tại bước cuối cùng của pipeline hiện KHÔNG còn mang thông tin
+màu thật nào. Đây là hệ quả đã biết, không phải mâu thuẫn với quyết định
+giữ RGB ở tầng PDFReader (2 tầng phục vụ 2 mục đích khác nhau: PDFReader
+bảo toàn dữ liệu gốc cho khả năng dùng lại tương lai; OCREngine tối ưu
+riêng cho pipeline Tesseract hiện tại).
+
+Confirmed trong implementation: không đổi core/pdf_reader.py (giữ
+nguyên như ADR-048); core/ocr_engine.py::OCREngine._preprocess() (ADR-053).
+
+------------------------------------------------------------------------

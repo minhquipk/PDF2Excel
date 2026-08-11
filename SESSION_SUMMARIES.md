@@ -1210,3 +1210,158 @@ verify" (đã thiết lập từ các phiên Template Matching trước) tiếp 
 chứng minh giá trị - cả 3 vấn đề nghiêm trọng nhất trong phiên (PIR
 error, chất lượng RapidOCR kém, bug deskew 90°) đều CHỈ phát hiện được
 qua chạy thật, không thấy được qua review tài liệu/code tĩnh.
+
+---
+
+# Session 2026-08-09 / 2026-08-11
+
+## Objective
+
+Xử lý Known Issue phát hiện qua thực nghiệm end-to-end sau khi hoàn
+thiện OCR (Tesseract, Session 2026-08-08/09): Report.txt cho thấy ~15%
+data PDF Scanned thiếu 3 field tiền tệ (subtotal/vat_amount/total_amount).
+Debug xác nhận (debug.txt) nguyên nhân không phải ở Windowing/Key
+Matching mà ở Value Matching/ValueConverter. Mở rộng thêm: xử lý vấn đề
+OCR nhầm lẫn dấu ',' / '.' trong chuỗi số (silent corruption).
+
+## Completed
+
+### Debug & chẩn đoán (dựa trên debug.txt người dùng cung cấp)
+
+Phân tích trực tiếp `TemplateMatcher.extract_fields()` theo đúng luồng
+code: xác nhận Windowing hoạt động đúng (candidate token nằm đúng
+trong window đã dựng), nhưng `_select_best_value()` trả None vì
+`value_pattern: "^[0-9.,]+$"` không khớp token OCR dạng "4,842,303VND" -
+Tesseract gộp đơn vị tiền tệ dính liền số thành 1 token khi bản scan
+không có khoảng trắng rõ ràng. Đối chiếu Report.txt xác nhận toàn bộ
+13 dòng cảnh báo đều thuộc PDF *_scanned.pdf, chỉ 3 field Decimal tiền
+tệ - khớp giả thuyết.
+
+### VND currency suffix (ADR-051)
+
+Xác định 7 biến thể qua thống kê thực tế của người dùng: vnd, VND, vnđ,
+VNĐ, ₫, đ, Đ. 2 nhóm xử lý khác nhau theo mức rủi ro:
+- 5 biến thể dài (≥2 ký tự/Unicode riêng biệt): strip vô điều kiện.
+- 2 biến thể 1 ký tự (đ/Đ): CHỈ strip khi liền sau chữ số - ràng buộc vị
+  trí để giảm rủi ro strip nhầm (cùng lớp rủi ro với "key_tokens 1 từ"
+  đã ghi nhận Session 2026-08-01/02).
+Đồng thời nới `value_pattern` tương ứng trong `sample_invoice_v1.json`
+(v3->v4). Verify: PASS toàn bộ test case đang có.
+
+### Nhầm lẫn dấu ',' / '.' - 3 hướng giải pháp song song
+
+Người dùng đề xuất 3 hướng, dự định kết hợp cả 3:
+
+1.  **Tăng DPI** - qua nhiều vòng thực nghiệm thực tế, chốt 450 (khác
+    đề xuất ban đầu 400). Có thêm cơ sở tham chiếu Tesseract/ABBYY:
+    DPI phù hợp phụ thuộc cỡ font/khổ giấy (400 cho font >10pt/A4,
+    600 cho font <8pt/A5) - ghi nhận làm kế hoạch v2.0 (DPI thích ứng
+    theo lựa chọn khổ giấy ở UI), v1 dùng mức chung 450.
+2.  **Preprocess trước Tesseract** (`OCREngine._preprocess()`, chạy
+    sau `_deskew()`): CLAHE (tăng contrast cục bộ, tránh khuếch đại
+    nhiễu ở vùng chi tiết nhỏ như đuôi dấu phẩy) + Unsharp Mask (sigma
+    nhỏ, amount khởi đầu thận trọng để tránh ringing artifact làm xấu
+    thêm chính vấn đề đang giải quyết). Thứ tự deskew-trước-preprocess
+    được xác nhận qua thực nghiệm: không có khác biệt rõ ràng so với
+    thứ tự ngược lại - giữ nguyên thứ tự sẵn có.
+3.  **Heuristic phục hồi số** (`ValueConverter._normalize_number_separators()`):
+    6 dấu hiệu khả nghi dựa trên vị trí dấu (không dựa loại ký tự):
+    dấu cuối không khớp decimal_separator cấu hình, decimal_separator
+    lặp lại, vi phạm quy tắc 3 chữ số, vị trí phi lý (đầu/cuối chuỗi),
+    double punctuation, decimal tail quá dài. Tích hợp vào
+    `_to_decimal()` KHÔNG chỉ dựa vào `Decimal()` raise exception (vì
+    lỗi nhầm dấu thường KHÔNG raise - "silent corruption", nguy hiểm
+    hơn field ra None).
+
+Kết hợp cả 3 (DPI 450 + Preprocess + heuristic phục hồi): tỷ lệ nhầm
+lẫn ',' / '.' giảm xuống dưới 0.5% qua thực nghiệm - PASS toàn bộ test
+case hiện có. Ghi nhận đây là cải thiện, KHÔNG phải giải quyết triệt
+để - còn 2 trường hợp biên chưa có giải pháp (mất hẳn dấu phân cách;
+cụm cuối 3 chữ số trùng decimal_separator) - đưa vào kế hoạch v2.0.
+
+### Đánh giá lại lý do giữ RGB (ADR-054, amend ADR-048)
+
+Do OCR engine đã chuyển hẳn sang Tesseract (khác PaddleOCR lúc ADR-048
+được quyết định), thảo luận lại: Tesseract có cần màu thật không? Xác
+nhận về mặt kỹ thuật Tesseract tự quy grayscale nội bộ, không có cơ chế
+học đặc trưng màu như PaddleOCR; A/B test trên dữ liệu hiện có không
+cho thấy khác biệt rõ ràng. Quyết định: VẪN GIỮ RGB, nhưng đổi lý do
+sang tính bất khả nghịch của chuyển đổi (Grayscale không khôi phục lại
+được RGB, trong khi RGB luôn chuyển được sang Grayscale ở bất kỳ đâu
+cần) - bảo toàn khả năng dùng lại kênh màu trong tương lai, không còn
+vì lợi ích OCR trực tiếp.
+
+## Architecture Decisions
+
+Xem ARCHITECTURE_DECISIONS.md ADR-051 đến ADR-054. Tóm tắt:
+
+-   ADR-051: Strip hậu tố VND (7 biến thể, 2 nhóm rủi ro khác nhau).
+-   ADR-052: Heuristic phục hồi số bị OCR nhầm lẫn ',' / '.' (6 dấu
+    hiệu cấu trúc, không chỉ dựa vào exception).
+-   ADR-053: DPI 300->450 + Preprocess (CLAHE+Sharpen) trong OCREngine.
+-   ADR-054 (amend ADR-048): lý do giữ RGB đổi sang tính bất khả nghịch
+    của chuyển đổi màu, không còn vì lợi ích OCR trực tiếp với Tesseract.
+
+## Issues Encountered
+
+### Silent corruption khó phát hiện hơn field ra None
+
+Phát hiện quan trọng trong phiên: lỗi OCR nhầm lẫn ',' / '.' thường
+KHÔNG khiến `Decimal()` raise exception - chuỗi sau xử lý vẫn đúng cú
+pháp nhưng SAI TRỊ SỐ (có thể lệch tới hàng nghìn lần). Đây là loại lỗi
+nguy hiểm hơn nhiều so với field ra None (đã có cơ chế ghi nhận qua
+Report.txt theo ADR-032/033) vì không có bất kỳ dấu hiệu cảnh báo nào.
+Thiết kế ban đầu dự định chỉ fallback khi exception xảy ra đã được điều
+chỉnh lại thành kiểm tra cấu trúc chuỗi TRƯỚC, độc lập với exception.
+
+### Rủi ro tự tạo ra vấn đề khi cố khắc phục nó (sharpen)
+
+Thảo luận kỹ trước khi triển khai: Unsharp Mask có nguy cơ tạo ringing
+artifact quanh nét mảnh - đúng nét mảnh nhất trong toàn bộ ký tự chính
+là đuôi dấu phẩy (đối tượng đang cố cải thiện). Giải quyết bằng cách
+bắt đầu tham số ở mức thận trọng (sigma nhỏ, amount thấp) thay vì mức
+trung bình/mạnh, để tinh chỉnh tăng dần qua thực nghiệm.
+
+## Validation
+
+Toàn bộ thay đổi verify bằng thực nghiệm thực tế của người dùng (nhiều
+vòng, không phải suy đoán tĩnh), nhất quán với nguyên tắc "chạy thật để
+verify" xuyên suốt dự án:
+
+-   ADR-051 (VND suffix): PASS toàn bộ test case đang có.
+-   ADR-052+053 (DPI + Preprocess + heuristic phục hồi, kết hợp cả 3):
+    tỷ lệ nhầm lẫn ',' / '.' giảm xuống dưới 0.5% - PASS toàn bộ test
+    case hiện có, KHÔNG phải 0% - ghi nhận rõ ràng là cải thiện, không
+    phải giải quyết triệt để.
+-   Thứ tự deskew/preprocess: verify qua thực nghiệm - không có khác
+    biệt kết quả rõ ràng giữa 2 thứ tự.
+
+## Next Session
+
+Ưu tiên:
+
+1.  Tiếp tục theo dõi 2 trường hợp biên chưa có giải pháp của ADR-052
+    (mất hẳn dấu phân cách; cụm cuối 3 chữ số trùng decimal_separator)
+    qua dữ liệu thật nhiều hơn.
+2.  v2.0: thiết kế DPI thích ứng theo khổ giấy/cỡ font (chọn khổ giấy ở
+    UI) - chưa bắt đầu, cần phiên thảo luận riêng.
+3.  Tinh chỉnh `NumberRepair.DECIMAL_TAIL_MAX_LENGTH` và
+    `OCR.PREPROCESS_*` khi có thêm dữ liệu PDF Scanned đa dạng hơn.
+4.  Các việc tồn đọng dài hạn không đổi: `processor.py` vs
+    `Worker.process()`, `main.py` vs `ui/main_window.py`, Template
+    Authoring Guide (nay cần bổ sung thêm nhóm quy tắc "ký hiệu đơn vị
+    dính liền giá trị số": %, VND, đ/Đ), `UIText.REPORT_PENDING` dead
+    code, `WorkbookSaveError` chưa verify permission thật.
+
+## Notes
+
+Phiên này tiếp tục xác nhận giá trị của nguyên tắc "chạy thật để verify"
+đã thiết lập từ các phiên trước: cả con số DPI cuối cùng (450, khác 400
+ban đầu) lẫn kết luận "thứ tự deskew/preprocess không khác biệt" đều chỉ
+xác định được qua nhiều vòng thực nghiệm thực tế của người dùng, không
+phải suy đoán lý thuyết. Silent corruption (ADR-052) là phát hiện quan
+trọng về mặt nguyên tắc: không phải mọi lỗi dữ liệu đều biểu hiện qua
+exception hay field None - cần chủ động kiểm tra cấu trúc dữ liệu đầu
+vào trong các trường hợp có rủi ro sai lệch âm thầm.
+
+---

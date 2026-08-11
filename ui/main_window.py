@@ -222,7 +222,6 @@ class MainWindow(QMainWindow):
         self,
         processed: int,
         total: int,
-        elapsed: str,
         eta: str,
     ) -> None:
         # elapsed từ Worker không dùng nữa — QTimer đảm nhiệm

@@ -1,7 +1,7 @@
 {
   "template_id": "sample_invoice_v1",
-  "version": 3,
-  "description": "Da verify bang thuc nghiem tren HD2026-0003_digital.pdf. Ap dung co che Section (giai quyet Known Limitation 3.1 - va cham tax_code/buyer_tax_code, va 3.2 - rui ro tie-break invoice_date) va merge nhieu tu cho Value Matching (3.3 - da xu ly o phien truoc). Yeu cau core/models.py, core/template_matcher.py, core/template_loader.py da ap dung day du cac patch tuong ung.",
+  "version": 4,
+  "description": "Da verify bang thuc nghiem tren HD2026-0003_digital.pdf. Ap dung co che Section (giai quyet Known Limitation 3.1 - va cham tax_code/buyer_tax_code, va 3.2 - rui ro tie-break invoice_date) va merge nhieu tu cho Value Matching (3.3). Bo sung xu ly hau to don vi tien te VND (bien the vnd/VND/vnd(dau)/VND(dau)/dong-ky-hieu/d/D dinh lien so) cho 3 field subtotal/vat_amount/total_amount - phat hien qua debug thuc nghiem tren batch PDF Scanned that (~15% data thieu field, xem debug.txt/Report.txt). Yeu cau core/models.py, core/template_matcher.py, core/template_loader.py, core/value_converter.py da ap dung day du cac patch tuong ung (ADR-043/044/045/051).",
   "sections": [
     {
       "section_id": "header",
@@ -149,7 +149,7 @@
         "max_distance": 0.85,
         "axis_tolerance": 0.006
       },
-      "value_pattern": "^[0-9.,]+$",
+      "value_pattern": "^[0-9.,]+\\s*(?:(?i:vn[dđ])|₫|[đĐ])?$",
       "decimal_format": {
         "thousand_separator": ",",
         "decimal_separator": "."
@@ -181,7 +181,7 @@
         "max_distance": 0.85,
         "axis_tolerance": 0.006
       },
-      "value_pattern": "^[0-9.,]+$",
+      "value_pattern": "^[0-9.,]+\\s*(?:(?i:vn[dđ])|₫|[đĐ])?$",
       "decimal_format": {
         "thousand_separator": ",",
         "decimal_separator": "."
@@ -199,7 +199,7 @@
         "max_distance": 0.85,
         "axis_tolerance": 0.006
       },
-      "value_pattern": "^[0-9.,]+$",
+      "value_pattern": "^[0-9.,]+\\s*(?:(?i:vn[dđ])|₫|[đĐ])?$",
       "decimal_format": {
         "thousand_separator": ",",
         "decimal_separator": "."

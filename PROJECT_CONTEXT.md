@@ -687,6 +687,29 @@ Resolved (previously listed here, now implemented — see Section 4):
   2026-08-08/09): `utils/logger.py` app.log đổi append->overwrite
   (ADR-050); `models/processing_table_model.py` UI đổi append->prepend;
   Elapsed/ETA đã hoàn thiện.
+- OCR: 2 vấn đề chất lượng nhận dạng số tiền (dấu VND dính liền số, và
+  nhầm lẫn dấu ',' / '.') đã được xử lý qua ADR-051/052/053 - PASS toàn
+  bộ test case hiện có, tỷ lệ nhầm lẫn ',' / '.' giảm xuống dưới 0.5%.
+  CHƯA về 0% - các trường hợp biên sau vẫn là giới hạn đã biết, chưa có
+  giải pháp: (a) OCR làm MẤT HẲN dấu phân cách (không còn dấu vết vị trí
+  để suy luận); (b) cụm cuối đúng 3 chữ số trùng ngẫu nhiên với
+  decimal_separator đã cấu hình. Xem ADR-052.
+- `core/ocr_engine.py::_preprocess()` (CLAHE + Sharpen, ADR-053) chuyển
+  ảnh về grayscale nội bộ trước khi xử lý, làm cho lợi ích giữ RGB ở
+  tầng PDFReader (ADR-048/054) không còn tác dụng trực tiếp lên
+  Tesseract ở bước cuối pipeline - RGB vẫn được giữ vì lý do bảo toàn
+  khả năng dùng lại kênh màu trong tương lai (ADR-054), không phải vì
+  lợi ích OCR hiện tại.
+- `Image.DPI = 450` (tăng từ 300, ADR-053) là mức chung cho v1, chưa
+  phân biệt theo khổ giấy/cỡ font - áp dụng cho MỌI trang của MỌI PDF
+  kể cả Digital-mode (chi phí bộ nhớ/thời gian ~2.25x so với 300 DPI cũ,
+  do PDFReader render page_image trước khi PDFDetector quyết định mode -
+  ADR-026). Kế hoạch DPI thích ứng theo khổ giấy đã ghi nhận cho v2.0
+  (xem §18).
+- `NumberRepair.DECIMAL_TAIL_MAX_LENGTH = 3` (core/constants.py) và 4
+  hằng số `OCR.PREPROCESS_*` là giá trị ước lượng ban đầu, cần tinh
+  chỉnh khi có thêm dữ liệu PDF Scanned thật đa dạng hơn - cùng nhóm với
+  `TemplateMatching.*`/`OCR.DESKEW_*` đã ghi nhận trước đó.
 
 ---
 
@@ -787,6 +810,15 @@ Also pending, not yet scheduled:
     (see Section 14).
 -   Remove dead code: `core/constants.py::UIText.REPORT_PENDING` (see
     Section 14).
+-   v2.0: DPI thích ứng theo khổ giấy/cỡ font (400 DPI font >10pt/A4
+    chuẩn, 600 DPI font <8pt/A5 hoặc A4 có bảng chỉ số phụ) - người dùng
+    chọn khổ giấy ở UI, hệ thống tự set DPI tương ứng thay vì
+    `Image.DPI` cố định. Cần thiết kế lại luồng truyền tham số DPI từ
+    UI/`Worker.configure()` xuống `PDFReader`. Ghi nhận Session
+    [ngày phiên này] - xem ADR-053.
+-   v2.0: tiếp tục giảm tỷ lệ nhầm lẫn ',' / '.' (hiện <0.5%) - 2 trường
+    hợp biên chưa có giải pháp (mất hẳn dấu phân cách; cụm cuối 3 chữ số
+    trùng decimal_separator) - xem ADR-052.
 
 ---
 
@@ -870,3 +902,7 @@ DO NOT change unless absolutely necessary.
   (VD core/parsing/template/, core/parsing/layoutlm/) — đã thảo luận sơ
   bộ, CHƯA quyết định, cần 1 phiên thảo luận riêng trước khi thực hiện
   (tránh đổi kiến trúc giữa chừng, theo Rule 1/11).
+- DPI thích ứng theo khổ giấy/cỡ font hóa đơn (v2.0, xem §14/§15,
+  ADR-053) - lựa chọn khổ giấy ở UI.
+- Cho phép người dùng tuỳ chỉnh `NumberRepair.DECIMAL_TAIL_MAX_LENGTH`
+  theo loại hóa đơn (v2.0, xem ADR-052).
