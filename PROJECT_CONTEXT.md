@@ -83,6 +83,7 @@ PDF2Excel/
     config.py
     main.py
     requirements.txt
+    requirements-dev.txt
 
     ui/
         base_widget.py
@@ -108,14 +109,19 @@ PDF2Excel/
         parser.py
         pdf_detector.py
         pdf_reader.py
-        processor.py
         report_writer.py
         template_loader.py
         template_matcher.py
         value_converter.py
 
+    tests/
+        core/
+            test_extractor.py
+
     resources/
         excel_mapping.json
+        EXCEL_MAPPING_GUIDE.md
+        TEMPLATE_AUTHORING_GUIDE.md
         templates/
             sample_invoice_v1.json
 ```
@@ -133,8 +139,13 @@ Completed:
   also reads raw word tuples (`words`) and renders a raw grayscale
   `PageImage` (300 DPI) for every page.
 - pdf_detector.py — full reasoning engine (Build Context, Heuristic
-  Evaluation, Knowledge Lookup, Confidence Composition, Final
-  Decision) per `PDF_Detector_Technical_Design.docx`.
+Evaluation, Knowledge Lookup, Confidence Composition, Final
+Decision) per PDF_Detector_Technical_Design.docx. Từ đợt đóng
+v1 (Part 1): đủ 7/7 Rule Category theo TDS §7.2 (Text, Image,
+Consistency, Quality, Layout, Document, Graphics — 2 rule cuối mới
+thêm, xem ADR-057, CHƯA qua thực nghiệm với dữ liệu thật đa dạng,
+trọng số cố ý thấp). Warning hiển thị nay sắp theo độ ưu tiên
+RuleCategory thay vì thứ tự rule chạy (ADR-055).
 - extractor.py — dispatches extraction strategy per
   `DocumentAnalysis.mode` (Digital / OCR / per-page Hybrid);
   normalizes word geometry (incl. rotation reconciliation for the
@@ -184,6 +195,17 @@ Completed:
   `openpyxl==3.1.5`.
 - resources/EXCEL_MAPPING_GUIDE.md — hướng dẫn viết `excel_mapping.json`
   cho người điều hành không biết lập trình (Session 2026-08-07).
+- resources/TEMPLATE_AUTHORING_GUIDE.md — hướng dẫn viết Template
+Definition JSON cho người điều hành không biết lập trình, đúc kết
+toàn bộ quy tắc/ràng buộc đã phát sinh qua thực nghiệm từ các phiên
+trước (Session 2026-08-01/02, 2026-08-07). Đóng Known Issue mở từ
+Session 2026-08-01/02.
+- tests/core/test_extractor.py — unit test đầu tiên của dự án
+(framework pytest, khai báo trong requirements-dev.txt riêng
+biệt với requirements.txt). 9 test case cho
+Extractor._rotate_bbox() (4 rotation × verify hình học tay + 2
+round-trip identity check). tests/core/ được thống nhất làm chuẩn
+cấu trúc cho mọi test module sau này.
 
 Current UI features:
 
@@ -583,55 +605,20 @@ Current:
 
 - Real OCR backend not implemented (`ocr_engine.py` is Mock only) —
   intentionally deferred, see Section 15.
-- `core/processor.py` is a placeholder (4 undefined method calls, not
-  inside any class/function — calling it directly would raise
-  `NameError`, not just "unimplemented"); its relationship to
-  `Worker.process()` (which currently acts as the real orchestrator)
-  needs clarification.
-- `main.py` is currently empty. The actual application entry point
-  (`if __name__ == "__main__":` block constructing `QApplication` and
-  `MainWindow`) lives in `ui/main_window.py` instead. This discrepancy
-  was noticed during source review but not yet discussed/resolved —
-  needs clarification on whether `main.py` should become the real
-  entry point or be removed.
-- `core/excel_writer.py::WorkbookSaveError` has not been verified
-  against a real OS-level permission failure (e.g. target `.xlsx` open
-  in Excel, or read-only file). Testing was attempted but could not be
-  reproduced in the development/test container, which runs with root
-  privileges and bypasses normal file permission checks. The exception
-  handling path (`_save_workbook()` catching `OSError`) is logically
-  correct and covered by other automated tests, but this specific
-  failure mode is unverified end-to-end. Needs manual verification on
-  a real user machine before being considered fully validated (see
-  Section 15).
-- `core/constants.py::UIText.REPORT_PENDING` is now dead code — no
-  longer referenced anywhere in `ui/main_window.py` after `_report()`
-  was reimplemented to open a real `report.txt` (ADR-041). Not yet
-  removed; flagged for cleanup.
-- PDFDetector Rule System currently implements 5 of 7 Rule
-  Categories defined in the TDS (§7.2): Text, Image, Consistency,
-  Quality, Layout are implemented; Document and Graphics rule
-  categories are not yet implemented.
 - Knowledge System (TDS Chapter 9: lifecycle, governance, sources)
   is defined at the design level only; no persistence/lifecycle
   management exists in source yet.
 - Extractor routes mixed-content pages (text + image) to a single
   source only; dual-source extraction deferred to v2.0 (see
   Section 4).
-- No automated test suite exists; `Extractor._rotate_bbox()` in
-  particular is a good candidate for dedicated unit tests before
-  further logic is built on top of it.
 - Value Matching (template_matcher.py) chỉ lấy 1 WordToken đơn lẻ; field
   nhiều từ (company_name, address) bị cắt cụt. Cần thiết kế ghép cụm
   Value trước khi Value Matching — deferred, chưa có giải pháp.
-- Chưa có tài liệu "Template Authoring Guide" (quy tắc viết key_tokens/
-  value_pattern an toàn) — cần thiết trước khi ai đó ngoài phiên thảo
-  luận này viết Template JSON thật.
 - TemplateMatching.* (core/constants.py) là giá trị ước lượng ban đầu,
   cần tinh chỉnh khi có PDF hóa đơn thật.
 - resources/templates/sample_invoice_v1.json cố ý giữ 2 lỗi đã biết
   (key_tokens ngắn, value_pattern lỏng) — chưa sửa, chờ dữ liệu thật.
-- - Value Matching nhiều từ (ADR-044, Session 2026-08-07) dùng cơ chế
+- Value Matching nhiều từ (ADR-044, Session 2026-08-07) dùng cơ chế
   gap-based, dừng mở rộng khi gặp token kết thúc bằng dấu `:`. Rủi ro
   còn lại: nếu 1 dòng có 2 field liền kề mà nhãn field thứ 2 KHÔNG kết
   thúc bằng `:`, giá trị vẫn có thể bị ghép tràn sang field kế bên. Mới
@@ -655,6 +642,16 @@ Current:
   ra khi Key Matching (VD "THÔNG TIN NGƯỜI MUA HÀNG:" — 5 từ — phải rút
   gọn `key_tokens` xuống 4 từ để qua được `SECTION_TIE_MARGIN`, xem
   ADR-045). Ràng buộc này áp dụng cho CẢ field lẫn section.
+- PDFDetector Document Rule/Graphics Rule (ADR-057) là thiết kế mới
+hoàn toàn, chưa qua thực nghiệm với dữ liệu thật đa dạng — trọng số
+(_DOCUMENT_RULE_WEIGHT/_GRAPHICS_RULE_WEIGHT = 0.20), ngưỡng
+(_GRAPHICS_DRAWING_PAGE_RATIO = 0.50) và danh sách từ khóa
+(_SCAN_METADATA_KEYWORDS) đều là placeholder, cùng nhóm cần tinh
+chỉnh với TemplateMatching.*.
+- resources/excel_mapping.json vẫn còn là mapping mẫu, chưa khớp
+workbook Excel thật của người dùng — quyết định hoãn xử lý sang
+giai đoạn làm tài liệu chuyển giao ứng dụng (không thuộc phạm vi
+đóng v1 code, ghi nhận tại đây để không lặp lại thảo luận).
 
 Resolved (previously listed here, now implemented — see Section 4):
 
@@ -675,18 +672,7 @@ Resolved (previously listed here, now implemented — see Section 4):
   awareness, not re-opening.)
 - Dependency file missing — resolved via `requirements.txt` added at
   project root, pinning `PySide6`, `PyMuPDF`, `rapidfuzz`, `openpyxl`.
-- Elapsed Time/ETA — implemented 
-- `Worker._format_note()` chọn warning đầu tiên theo thứ tự rule chạy
-  (`PDFDetector._evaluate_rules()`, luôn là `text_coverage`), không
-  phải warning liên quan nhất đến quyết định cuối cùng - có thể hiển
-  thị cảnh báo "bằng chứng yếu" cạnh kết luận High confidence, gây cảm
-  giác mâu thuẫn dù dữ liệu không sai. Phát hiện Session 2026-08-08/09,
-  hoãn thảo luận sang phiên sau.
-- 3 thay đổi sau được người dùng báo đã áp dụng vào source nhưng CHƯA
-  verify qua đối chiếu source thật trong phiên ghi nhận (Session
-  2026-08-08/09): `utils/logger.py` app.log đổi append->overwrite
-  (ADR-050); `models/processing_table_model.py` UI đổi append->prepend;
-  Elapsed/ETA đã hoàn thiện.
+- Elapsed Time/ETA — implemented
 - OCR: 2 vấn đề chất lượng nhận dạng số tiền (dấu VND dính liền số, và
   nhầm lẫn dấu ',' / '.') đã được xử lý qua ADR-051/052/053 - PASS toàn
   bộ test case hiện có, tỷ lệ nhầm lẫn ',' / '.' giảm xuống dưới 0.5%.
@@ -715,110 +701,20 @@ Resolved (previously listed here, now implemented — see Section 4):
 
 # 15. Next Tasks
 
-Decision made at the end of Session 2026-08-03: two candidate
-directions were discussed for the next session —
+Pipeline end-to-end đã hoàn thiện, verify qua chạy thật (UI thật, PDF
+Digital lẫn Scanned). Giai đoạn hiện tại: **đóng v1**, chia 3 phần:
 
-1.  Wire up the UI end-to-end with real config files and run against
-    real sample PDF data.
-2.  Implement a real OCR backend first, then test.
+- **Part 1/3 — Xử lý Known Issues từ nhật ký: HOÀN TẤT** (xem
+  CHANGELOG.md, mục [ngày đóng Part 1] để biết đầy đủ danh sách đã xử
+  lý).
+- **Part 2/3 — Xử lý vấn đề do người dùng tự ghi nhận:** chưa bắt đầu.
+- **Part 3/3 — Xử lý vấn đề phát sinh khi quét trực tiếp mã nguồn:**
+  chưa bắt đầu.
 
-**Direction 1 was chosen**, per ADR-013 (Mock First: validate UI/
-Worker/Signals before replacing a Mock) and because Mock `OCREngine`
-is already sufficient for Digital-mode PDFs — implementing OCR now
-would conflate two untested things at once (new OCR code + first-ever
-real end-to-end run), which conflicts with Rule 2/3 of
-DEVELOPMENT_WORKFLOW.md (one feature at a time, small reversible
-changes).
-
-Priority order for the next session:
-
-1.
-
-Place real sample PDF files (Digital-type first, to stay independent
-of the still-Mock OCREngine) in a local folder outside the repo.
-
-↓
-
-2.
-
-Adjust `resources/excel_mapping.json` to match the real target output
-Excel workbook's actual Table name and column headers.
-
-↓
-
-3.
-
-Run the real application end-to-end (`python ui/main_window.py` —
-see Section 14, `main.py` entry-point discrepancy still open) against
-the sample folder: Input Folder → Output Excel → Start → wait →
-Report.
-
-↓
-
-4.
-
-Inspect results: does the output `.xlsx` contain correct data? Does
-`reports/Report.txt` content make sense? Does the sample template
-(`sample_invoice_v1.json`) actually match fields in the real PDFs?
-
-**Cập nhật Session 2026-08-08/09:** Bước 3 đã thực hiện (lần chạy UI
-thật đầu tiên, Input Folder → Start → Report). Trọng tâm phiên lập tức
-chuyển sang debug OCR khi gặp PDF Scanned trong lượt chạy đó — xem
-ARCHITECTURE_DECISIONS.md ADR-047 đến ADR-050. Bước 4 (Inspect results)
-CHƯA xác nhận đầy đủ cho PDF Digital-mode trong đúng lượt chạy này —
-cần verify riêng ở phiên sau. Điều kiện "Sau khi có lượt chạy UI thật,
-quay lại Hướng 2" (câu cuối mục 5 dưới đây) đã được kích hoạt và thực
-hiện ngay trong phiên này.
-↓
-
-5.
-
-Fix `sample_invoice_v1.json`'s two known issues~~ — Done, Session
-2026-08-07 (phạm vi thực tế rộng hơn nhiều: xem SESSION_SUMMARIES.md,
-Session 2026-08-07, và ADR-043/044/045). `sample_invoice_v1.json` hiện
-ở version 3, đã verify 12/12 field đúng trên `HD2026-0003_digital.pdf`
-BẰNG SCRIPT KIỂM THỬ TRỰC TIẾP trong sandbox — bước "chạy app thật qua
-UI" (mục 3 ở trên) vẫn CHƯA thực hiện, vẫn là việc cần làm tiếp theo.
-
-Sau khi có lượt chạy UI thật, quay lại Hướng 2 (OCR thật) cho các PDF
-Scanned/Hybrid nếu có trong bộ data mẫu.
-
-Also pending, not yet scheduled:
-
--   Viết "Template Authoring Guide" — cần bổ sung quy tắc về
-    `sections`/`key_tokens` cho Section (VD giới hạn `MAX_KEY_WORDS=4`
-    khi chọn section header dài — phát hiện từ Session 2026-08-07),
-    ngoài các quy tắc đã ghi từ Session 2026-08-01/02 (tránh key 1 từ,
-    tránh `value_pattern` quá lỏng).
--   Điều chỉnh `resources/excel_mapping.json` khớp workbook Excel thật
-    (đã có `resources/EXCEL_MAPPING_GUIDE.md` hướng dẫn cách viết, từ
-    Session 2026-08-07, nhưng bản thân file mapping mẫu vẫn chưa cập
-    nhật khớp workbook thật của người dùng).
--   Đánh giá rủi ro tràn của gap-based Value merge (ADR-044) và va
-    chạm section header (ADR-045) trên nhiều mẫu hóa đơn thật đa dạng
-    hơn — hiện chỉ có 1 file test.
--   Tinh chỉnh `TemplateMatching.SECTION_TIE_MARGIN` cùng các hằng số
-    `TemplateMatching.*` khác khi có thêm dữ liệu thật.
--   Manual verification of `WorkbookSaveError` against a real OS
-    permission failure (see Section 14) — could not be reproduced in
-    the root-privileged test container.
--   Unit tests for `Extractor._rotate_bbox()` (four rotation cases) —
-    still open since Session 2026-07-31.
--   Resolve `processor.py` role vs `Worker.process()` — still open
-    since Session 2026-07-29.
--   Resolve `main.py` vs `ui/main_window.py` entry-point discrepancy
-    (see Section 14).
--   Remove dead code: `core/constants.py::UIText.REPORT_PENDING` (see
-    Section 14).
--   v2.0: DPI thích ứng theo khổ giấy/cỡ font (400 DPI font >10pt/A4
-    chuẩn, 600 DPI font <8pt/A5 hoặc A4 có bảng chỉ số phụ) - người dùng
-    chọn khổ giấy ở UI, hệ thống tự set DPI tương ứng thay vì
-    `Image.DPI` cố định. Cần thiết kế lại luồng truyền tham số DPI từ
-    UI/`Worker.configure()` xuống `PDFReader`. Ghi nhận Session
-    [ngày phiên này] - xem ADR-053.
--   v2.0: tiếp tục giảm tỷ lệ nhầm lẫn ',' / '.' (hiện <0.5%) - 2 trường
-    hợp biên chưa có giải pháp (mất hẳn dấu phân cách; cụm cuối 3 chữ số
-    trùng decimal_separator) - xem ADR-052.
+`resources/excel_mapping.json` khớp workbook thật và tài liệu hướng
+dẫn cài đặt OCR (Tesseract binary hệ thống, `vie.traineddata`) cho
+end-user được lùi sang giai đoạn làm tài liệu chuyển giao ứng dụng,
+diễn ra sau khi hoàn tất cả 3 Part đóng v1.
 
 ---
 

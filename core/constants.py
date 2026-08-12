@@ -52,14 +52,11 @@ class Logging:
 
 class FileDialog:
     """Bộ lọc File Dialog."""
-    PDF_FILTER = "PDF Files (*.pdf)"
     EXCEL_FILTER = "Excel Files (*.xlsx)"
-    ALL_FILES = "All Files (*.*)"
 
 
 class Report:
     """Cấu hình xuất báo cáo."""
-    FOLDER = "reports"
     FILE_PREFIX = "Report"
     FILE_EXTENSION = ".txt"
 
@@ -151,12 +148,6 @@ class UIText:
     # Table
     TABLE_TITLE = "Processing Status"
 
-    # Message
-    READY = "Ready."
-    PROCESSING = "Processing..."
-    COMPLETED = "Completed."
-    CANCELLED = "Cancelled."
-
     # Progress
     PROGRESS_GROUP = "Processing Progress"
     PROCESSED = "Processed"
@@ -173,7 +164,6 @@ class UIText:
     REPORT_TITLE = "Report"
     INPUT_FOLDER_REQUIRED = "Please select an input folder."
     OUTPUT_EXCEL_REQUIRED = "Please select an output Excel file."
-    REPORT_PENDING = "Report feature will be implemented later."
 
     # Report
     REPORT_NOT_AVAILABLE = "No report has been generated yet. Please run Start first."

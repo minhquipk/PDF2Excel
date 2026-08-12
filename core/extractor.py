@@ -33,14 +33,24 @@ class Extractor:
         document: PDFDocument,
         analysis: DocumentAnalysis,
     ) -> ExtractionResult:
-        """Return word-level extraction results for the given decision."""
+        """Return word-level extraction results for the given decision.
+
+        Raises
+        ------
+        ValueError
+            If called with ``analysis.mode is AnalysisMode.UNKNOWN``. This
+            is a programming-contract violation (ADR-027): UNKNOWN
+            represents the absence of a classification decision, not a
+            case for Extractor to handle. The caller
+            (``Worker._process_pdf()``) is responsible for never calling
+            Extractor when ``analysis.mode is UNKNOWN``.
+        """
         if analysis.mode is AnalysisMode.UNKNOWN:
-            return ExtractionResult(
-                source_mode=analysis.mode,
-                words_by_page={},
-                warnings=(
-                    "Extraction was skipped because the document type is unknown.",
-                ),
+            raise ValueError(
+                "Extractor.extract() was called with AnalysisMode.UNKNOWN. "
+                "UNKNOWN represents the absence of a classification "
+                "decision and must never be passed to Extractor (ADR-027) "
+                "- the caller must filter it out beforehand."
             )
 
         words_by_page: dict[int, tuple[WordToken, ...]] = {}

@@ -984,3 +984,74 @@ ADR-050 (app.log). Tóm tắt các thay đổi cuối cùng còn lại trong sou
   từ nhiều phiên trước - xem PROJECT_CONTEXT.md §14).
 
 ------------------------------------------------------------------------
+
+## 2026-08-12 — Đóng v1, Part 1/3: Xử lý Known Issues từ nhật ký
+
+### Removed
+- `core/processor.py` — xóa hoàn toàn (dead code: 4 lời gọi top-level
+  tham chiếu biến `processor` chưa từng định nghĩa, NameError nếu bị
+  import/exec; không được reference ở bất kỳ đâu trong source thật).
+  Vai trò orchestrator (ADR-004) xác nhận chính thức thuộc về
+  `Worker.process()`, đóng câu hỏi mở từ Session 2026-07-29.
+- Dead code trong `core/constants.py`: `UIText.REPORT_PENDING`,
+  `FileDialog.PDF_FILTER`, `FileDialog.ALL_FILES`,
+  `UIText.READY`/`PROCESSING`/`COMPLETED`/`CANCELLED`, `Report.FOLDER`
+  — xác nhận không được reference ở bất kỳ đâu qua rà soát toàn bộ
+  source.
+- `core/models.py::ExtractionResult.warnings` — field không còn nơi
+  nào gán giá trị khác rỗng sau khi `Extractor.extract()` đổi sang
+  `raise ValueError` cho UNKNOWN (xem ADR-056).
+
+### Fixed
+- `core/extractor.py::Extractor.extract()` nay thật sự `raise
+  ValueError` khi `analysis.mode is AnalysisMode.UNKNOWN`, khớp lại mô
+  tả đã có từ đầu trong ADR-027 (source trước đây trả về gracefully,
+  sai lệch với tài liệu — xem ADR-056).
+- `Worker._format_note()`: warning hiển thị lên UI nay ưu tiên theo
+  `RuleCategory` (QUALITY/LAYOUT/DOCUMENT/GRAPHICS trước
+  CONSISTENCY/IMAGE/TEXT) thay vì luôn lấy warning của rule chạy đầu
+  tiên (`text_coverage`) — xem ADR-055. Dọn kèm nhánh
+  `extraction.warnings` chết (không bao giờ chạy tới trong pipeline
+  thật).
+
+### Added
+- `resources/TEMPLATE_AUTHORING_GUIDE.md` — đóng Known Issue mở từ
+  Session 2026-08-01/02.
+- `tests/core/test_extractor.py` — unit test đầu tiên của dự án (9 test
+  case cho `Extractor._rotate_bbox()`), `requirements-dev.txt`
+  (`pytest==8.3.4`). `tests/core/` là chuẩn cấu trúc test cho các
+  module khác sau này.
+- `core/pdf_detector.py`: 2 rule mới — `_evaluate_document_rule()`
+  (category `DOCUMENT`, RC-001) và `_evaluate_graphics_rule()`
+  (category `GRAPHICS`, RC-004) — hoàn thiện đủ 7/7 Rule Category theo
+  TDS §7.2 (trước đó 5/7). Xem ADR-057 cho thiết kế đầy đủ và giới hạn
+  đã biết (chưa qua thực nghiệm dữ liệu thật đa dạng).
+
+### Changed
+- `main.py`: nay chứa khối `if __name__ == "__main__":` (trước đây
+  rỗng) — trở thành entry point thật duy nhất của ứng dụng.
+  `ui/main_window.py`: xóa khối `__main__` tương ứng, không còn chạy
+  được độc lập. Đóng discrepancy mở từ Session 2026-07-29.
+
+### Verified
+- `core/excel_writer.py::WorkbookSaveError` — tái hiện thành công lỗi
+  permission thật trong sandbox Linux bằng kỹ thuật `chattr +i`
+  (immutable attribute, chặn được cả root — khác các lần thử `chmod`
+  trước đây không hiệu quả với container chạy root). Xác nhận
+  `except OSError` bắt đúng `PermissionError`, bọc đúng thành
+  `WorkbookSaveError`, không leak exception gốc. Đồng thời verify UX
+  trên môi trường Windows thật (người dùng tự test): popup
+  `QMessageBox.warning` hiển thị đúng, ứng dụng không treo. Đóng Known
+  Issue mở từ Session 2026-08-03.
+
+### Next
+- Đóng v1 Part 2/3: xử lý vấn đề do người dùng tự ghi nhận (chưa bắt
+  đầu).
+- Đóng v1 Part 3/3: xử lý vấn đề phát sinh khi quét trực tiếp mã nguồn
+  (chưa bắt đầu).
+- Sau khi hoàn tất cả 3 Part: `resources/excel_mapping.json` khớp
+  workbook thật + tài liệu hướng dẫn cài đặt OCR cho end-user, thực
+  hiện trong giai đoạn làm tài liệu chuyển giao ứng dụng (đã quyết
+  định hoãn, không thuộc phạm vi đóng v1 code).
+
+------------------------------------------------------------------------

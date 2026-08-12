@@ -345,12 +345,10 @@ class ExtractionResult:
     page_images: Mapping[int, PageImage] = field(
         default_factory=lambda: MappingProxyType({})
     )
-    warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "words_by_page", _freeze_value(self.words_by_page))
         object.__setattr__(self, "page_images", _freeze_value(self.page_images))
-        object.__setattr__(self, "warnings", _freeze_value(self.warnings))
 
 
 @dataclass(slots=True, frozen=True)

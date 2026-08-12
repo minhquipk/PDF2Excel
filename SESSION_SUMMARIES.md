@@ -1365,3 +1365,222 @@ exception hay field None - cần chủ động kiểm tra cấu trúc dữ liệ
 vào trong các trường hợp có rủi ro sai lệch âm thầm.
 
 ---
+
+# Session 2026-08-12 — Đóng v1, Part 1/3
+
+## Objective
+
+Bắt đầu quy trình đóng v1 (chia 3 phần theo quyết định của người dùng:
+Part 1 - Known Issues từ nhật ký; Part 2 - vấn đề người dùng tự ghi
+nhận; Part 3 - vấn đề phát sinh khi quét trực tiếp mã nguồn). Phiên này
+xử lý toàn bộ Part 1: 7 Known Issue được liệt kê sẵn trong
+PROJECT_CONTEXT.md §14/CHANGELOG.md Unreleased-Next tại thời điểm bắt
+đầu phiên.
+
+## Completed
+
+### 1. `core/processor.py` — xóa
+
+Xác nhận qua rà soát source: 4 lời gọi top-level tham chiếu biến
+`processor` chưa từng định nghĩa (NameError nếu exec), không được
+import/reference ở bất kỳ đâu. Vai trò ADR-004 (orchestrator) đã được
+`Worker.process()` đảm nhiệm đầy đủ từ lâu. Người dùng tự xóa file sau
+khi thảo luận thống nhất.
+
+### 2. `main.py` vs `ui/main_window.py` — resolve entry point
+
+Chuyển khối `if __name__ == "__main__":` từ `ui/main_window.py` sang
+`main.py` (trước đó rỗng). Verify chạy thật `python main.py` từ gốc dự
+án, hành vi giữ nguyên.
+
+### 3. Rà soát dead code toàn bộ source
+
+Quét `core/`, `ui/`, `models/`, `utils/`, `config.py` tìm constant/
+enum/dataclass/method không được reference. Chia 3 nhóm:
+- Nhóm A (xóa): 5 mục trong `core/constants.py`
+  (`UIText.REPORT_PENDING`, `FileDialog.PDF_FILTER`,
+  `FileDialog.ALL_FILES`, `UIText.READY/PROCESSING/COMPLETED/
+  CANCELLED`, `Report.FOLDER`).
+- Nhóm B (giữ, có chủ đích): `SessionResult`, `ProcessError`,
+  `ProcessStage`, `ErrorType` — domain model chưa wire vào pipeline
+  nhưng có thể phục vụ ý đồ xử lý lỗi có cấu trúc trong tương lai,
+  người dùng quyết định giữ lại thay vì coi là dead code.
+- Nhóm C (giữ, không phải dead code): API interface chủ đích chưa dùng
+  tới (`BaseWidget.clear()/reset()`, `ProcessingTableModel.items()`,
+  `ProcessingTable.model()`, `App.VERSION`/`AUTHOR`).
+
+### 4. `resources/TEMPLATE_AUTHORING_GUIDE.md`
+
+Tổng hợp toàn bộ quy tắc/ràng buộc đã phát sinh qua thực nghiệm rải rác
+trong ADR-030, ADR-043, ADR-044, ADR-045, ADR-051 và Session 2026-08-01/
+02, 2026-08-07 thành 1 tài liệu Markdown đồng bộ style với
+`EXCEL_MAPPING_GUIDE.md`. Gộp chung "spec + best practice" (schema đầy
+đủ `TemplateDefinition`/`FieldDefinition`/`SectionDefinition`/
+`SpatialRelation` kèm quy tắc an toàn ngay tại từng mục), dùng
+`sample_invoice_v1.json` v4 làm ví dụ xuyên suốt. Người dùng xác nhận
+nội dung.
+
+### 5. Unit test đầu tiên của dự án
+
+Xác nhận `Extractor._rotate_bbox()` là `@staticmethod` thuần túy, không
+cần fixture PDF thật/mock `Extractor()` (tránh `OCREngine()` raise
+`FileNotFoundError` nếu thiếu tessdata). Trước khi viết test, tự suy
+diễn độc lập công thức hình học cho cả 3 case xoay (90/180/270) bằng
+cách rotate 4 góc bbox quanh gốc và lấy lại bounding box - xác nhận
+công thức trong code đúng toán học, không phát hiện sai sót. Viết 9
+test case: 1 (rotation=0) + 2×3 (sample bbox + full-page edge case cho
+mỗi góc 90/180/270, dùng số liệu suy diễn tay) + 2 (round-trip identity
+90+270 và 180+180 - bắt lỗi dấu độc lập với việc suy diễn tay có đúng
+hay không). Framework `pytest`, dependency mới `requirements-dev.txt`
+(tách khỏi `requirements.txt` vì không cần cho end-user). Vị trí
+`tests/core/test_extractor.py`, thống nhất `tests/core/` làm chuẩn cấu
+trúc cho mọi test sau này. Người dùng xác nhận cài đặt, chạy `pytest
+-v`, toàn bộ 9 test PASS thật trên máy.
+
+### 6. `Worker._format_note()` chọn sai warning ưu tiên
+
+Xác nhận root cause: `DocumentAnalysis.warnings` được flatten theo thứ
+tự rule chạy cố định trong `_evaluate_rules()`, luôn đặt warning của
+`text_coverage` lên đầu bất kể mức độ liên quan tới quyết định cuối.
+Thảo luận 2 phương án (sửa tại `PDFDetector` vs sửa tại
+`Worker._format_note()`) - người dùng chọn Phương án A (sửa tại
+`PDFDetector`, tổng quát theo `RuleCategory` thay vì hard-code tên
+rule). Implement `_evidence_warnings_ordered()` + constant
+`_WARNING_CATEGORY_PRIORITY` trong `core/pdf_detector.py`. Dọn kèm
+nhánh `extraction.warnings` chết trong `Worker._format_note()` (phát
+hiện phụ: nhánh này không bao giờ chạy tới trong pipeline thật, vì
+`Worker` không bao giờ gọi `Extractor.extract()` khi mode UNKNOWN).
+Xem ADR-055.
+
+### 7. Phát hiện & xử lý mismatch ADR-027
+
+Khi rà soát nhánh `extraction.warnings`, phát hiện `core/extractor.py::
+extract()` **không** raise `ValueError` khi UNKNOWN như ADR-027/
+CHANGELOG.md/SESSION_SUMMARIES.md (Session 2026-07-31) đã mô tả từ đầu
+- source thật trả về gracefully. Thảo luận 2 phương án (sửa tài liệu
+khớp code, vs sửa code khớp tài liệu) - người dùng chọn sửa code (thêm
+`raise ValueError`), theo đúng lập luận gốc của ADR-027 (phân biệt lỗi
+"Detector không quyết định được" khỏi lỗi "Extractor bị gọi sai hợp
+đồng lập trình" - đây là 2 tầng khác bản chất, nên xử lý khác nhau).
+Hệ quả kèm theo: `ExtractionResult.warnings` (`core/models.py`) trở
+thành field chết sau patch, được xóa. Xem ADR-056.
+
+### 8. Document Rules & Graphics Rules (TDS §7.2 RC-001/RC-004)
+
+Người dùng cập nhật `PDF_Detector_Technical_Design.docx` trong project
+theo yêu cầu đối chiếu lại - xác nhận qua đọc trực tiếp: nội dung §7.2
+không đổi so với bản đã có, chỉ mô tả định tính cấp cao cho RC-001/
+RC-004, không có công thức/ngưỡng cụ thể (đúng bản chất TDS §5.4: diễn
+giải luôn thuộc trách nhiệm reasoning engine, không phải TDS). Xác
+nhận với người dùng: đây là thiết kế mới hoàn toàn (Hướng B), không
+phải "khôi phục" nội dung TDS có sẵn.
+
+Thiết kế 2 rule mới dựa trên field có sẵn trong `AnalysisContext`
+nhưng trước đó chưa từng dùng cho `supports`:
+- `document_metadata` (DOCUMENT): metadata Producer/Creator chứa từ
+  khóa gợi ý phần mềm scan -> `supports={SCANNED: 0.20}`.
+- `vector_graphics_coverage` (GRAPHICS): `drawing_page_ratio >= 0.50`
+  -> `supports={DIGITAL: 0.20}`.
+
+Nguyên tắc thiết kế: chỉ tạo `supports` từ tín hiệu DƯƠNG TÍNH rõ ràng,
+không suy luận từ sự vắng mặt dữ liệu (đúng DP-003, nhất quán với 5
+rule cũ). Trọng số cố ý thấp (0.20) vì chưa qua thực nghiệm dữ liệu
+thật đa dạng - đã tự kiểm tra không vượt `_EVIDENCE_SCORE_SCALE = 1.40`
+ở bất kỳ mode nào. Người dùng xác nhận cả 3 điểm thiết kế (trọng số,
+ngưỡng, danh sách từ khóa) trước khi chốt code. Xem ADR-057.
+
+### 9. Verify `WorkbookSaveError` (Known Issue mở từ Session 2026-08-03)
+
+Các lần thử trước đều thất bại vì môi trường test chạy root (`chmod`
+không chặn được root). Lần này thử kỹ thuật khác: `chattr +i`
+(immutable attribute Linux, chặn được cả root trên filesystem ext) -
+tự verify trực tiếp trong sandbox bằng bash: tạo file `.xlsx`, gắn
+immutable, gọi `openpyxl.save()` -> xác nhận raise đúng
+`PermissionError` (subclass `OSError`). Copy nguyên văn logic
+`ExcelWriter._save_workbook()` thật, verify bắt đúng lỗi, bọc đúng
+thành `WorkbookSaveError`, không leak exception gốc - **PASS**.
+
+Lưu ý minh bạch: kỹ thuật `chattr +i` là Linux-only, không phản ánh
+chính xác kịch bản Windows thật ("file đang mở trong Excel") - nhưng
+về mặt Python, cả 2 kịch bản đều là `OSError`/subclass, nên
+`except OSError` đã đủ tổng quát. Người dùng bổ sung: đã tự test trên
+môi trường Windows thật, xác nhận popup `QMessageBox.warning` hiển thị
+đúng, ứng dụng không treo.
+
+## Architecture Decisions
+
+Xem ARCHITECTURE_DECISIONS.md ADR-055 đến ADR-057. Tóm tắt:
+
+- ADR-055: Thứ tự ưu tiên hiển thị warning theo `RuleCategory` trong
+  `PDFDetector` (không phải theo thứ tự rule chạy).
+- ADR-056: `Extractor.extract()` raise `ValueError` khi UNKNOWN - sửa
+  code khớp lại ADR-027 (thay vì sửa tài liệu khớp code).
+- ADR-057: Bổ sung Document Rules & Graphics Rules cho `PDFDetector`,
+  hoàn thiện đủ 7/7 Rule Category theo TDS §7.2.
+
+## Issues Encountered
+
+### TDS không đủ chi tiết đặc tả rule cụ thể
+
+Ban đầu dự định dựa vào `PDF_Detector_Technical_Design.docx` để lấy đặc
+tả Document/Graphics Rules, nhưng xác nhận qua đọc trực tiếp: TDS §7.2
+chỉ định nghĩa *khuôn khổ* (Rule Category là gì, Rule phải tuân
+RP-00x nào), không đặc tả *nội dung cụ thể* của từng rule (công thức/
+ngưỡng) - đây luôn là quyết định ở tầng implementation, đúng theo
+chính TDS §5.4. Người dùng cập nhật lại file trong project theo yêu
+cầu đối chiếu nhưng nội dung không đổi - xác nhận đây không phải thiếu
+sót tài liệu, mà là bản chất thiết kế của TDS (mô tả nguyên tắc, không
+mô tả tham số).
+
+### Kỹ thuật tái hiện lỗi permission vượt qua giới hạn container root
+
+Các phiên trước (Session 2026-08-03) từng thử `chmod` để giả lập lỗi
+permission nhưng không thành công vì container test chạy root (`chmod`
+không chặn được root theo mặc định Linux). Phiên này dùng `chattr +i`
+(immutable attribute) - khác cơ chế permission thông thường, chặn được
+cả root (trừ khi có capability `CAP_LINUX_IMMUTABLE` bị gỡ bỏ tường
+minh) - giải quyết được giới hạn đã tồn đọng nhiều phiên.
+
+## Validation
+
+- 9 unit test `Extractor._rotate_bbox()`: PASS thật trên máy người
+  dùng (`pytest -v`), xác nhận lại sau mỗi patch tiếp theo trong phiên
+  (không bị ảnh hưởng bởi các thay đổi ở `PDFDetector`/`Worker`).
+- `Worker._format_note()` + ADR-055: verify thực nghiệm thật trên PDF
+  có đồng thời cảnh báo `content_coverage`/`page_layout` và cảnh báo
+  `text_coverage` yếu - note hiển thị đúng thứ tự ưu tiên mới.
+- ADR-056 (`raise ValueError`): verify qua chạy thật, pipeline không
+  đổi hành vi (đúng kỳ vọng - `Worker` đã tự chặn).
+- ADR-057 (Document/Graphics Rules): verify chạy thật trên PDF Digital
+  và Scanned đã dùng trước đây - `DocumentAnalysis.evidence` có đủ 7
+  phần tử, mode cuối cùng không đổi so với trước patch.
+- `WorkbookSaveError`: verify kép - logic exception qua `chattr +i`
+  trong sandbox (Assistant tự thực hiện) + UX thật trên Windows (người
+  dùng tự thực hiện).
+
+## Next Session
+
+Ưu tiên theo đúng kế hoạch 3 Part đã thống nhất:
+
+1. Đóng v1 Part 2/3 - xử lý vấn đề do người dùng tự ghi nhận (chưa xác
+   định nội dung cụ thể, chờ người dùng liệt kê).
+2. Đóng v1 Part 3/3 - xử lý vấn đề phát sinh khi quét trực tiếp mã
+   nguồn (chưa bắt đầu).
+3. Sau khi hoàn tất cả 3 Part: giai đoạn làm tài liệu chuyển giao ứng
+   dụng (`resources/excel_mapping.json` khớp workbook thật, tài liệu
+   hướng dẫn cài đặt OCR cho end-user - Tesseract binary hệ thống,
+   `vie.traineddata`).
+
+## Notes
+
+Phiên này là phiên đầu tiên dự án có unit test tự động (trước đó hoàn
+toàn dựa vào "chạy thật để verify" thủ công qua nhiều phiên) - không
+thay thế nguyên tắc đó (vẫn tiếp tục áp dụng cho Document/Graphics
+Rules, WorkbookSaveError), nhưng bổ sung 1 lớp bảo vệ hồi quy
+(regression protection, đúng tinh thần TS-005 của TDS) cho phần logic
+thuần túy, ổn định như `_rotate_bbox()`. Việc phát hiện mismatch
+ADR-027 (Mục 7) cũng là 1 xác nhận giá trị của quy trình "đối chiếu
+tài liệu với source thật" mà dự án đã áp dụng nhất quán từ đầu - phát
+hiện được nhờ rà soát trực tiếp, không phải vì tài liệu tự báo lỗi.
+
+------------------------------------------------------------------------

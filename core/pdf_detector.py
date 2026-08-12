@@ -31,6 +31,42 @@ class PDFDetector:
     _DECISION_TIE_MARGIN = 0.10
     _EVIDENCE_SCORE_SCALE = 1.40
 
+    # --- Document Rule / Graphics Rule (bổ sung, TDS §7.2 RC-001/RC-004) ---
+    # CHƯA qua thực nghiệm với dữ liệu thật (khác 5 rule Text/Image/
+    # Consistency/Quality/Layout đã verify trên PDF thật) - weight cố ý
+    # đặt thấp để không làm lệch các quyết định biên đã ổn định. Cần
+    # tinh chỉnh khi có dữ liệu thật, cùng nhóm "placeholder" với
+    # TemplateMatching.* (core/constants.py).
+    _DOCUMENT_RULE_WEIGHT = 0.20
+    _GRAPHICS_RULE_WEIGHT = 0.20
+    _GRAPHICS_DRAWING_PAGE_RATIO = 0.50
+
+    # Từ khóa gợi ý phần mềm scan trong metadata PDF (Producer/Creator).
+    # Danh sách dựa trên tri thức chung, CHƯA verify với PDF Scanned
+    # thật của dự án - cần rà lại khi có cơ hội đối chiếu.
+    _SCAN_METADATA_KEYWORDS = (
+        "scan", "scanner", "scanned",
+        "camscanner", "adobe scan", "naps2", "vuescan", "scansnap",
+    )
+
+    # Thứ tự ưu tiên hiển thị cảnh báo theo category khi >1 rule cùng
+    # sinh warning (ADR-055): category liên quan CHẤT LƯỢNG TÀI LIỆU
+    # (QUALITY, LAYOUT) ưu tiên trước category mô tả độ KHÔNG CHẮC CHẮN
+    # của riêng 1 rule (TEXT) - tránh hiển thị cảnh báo "bằng chứng yếu"
+    # của 1 rule đơn lẻ cạnh 1 kết luận confidence cao được củng cố bởi
+    # các rule khác. DOCUMENT/GRAPHICS chưa có rule nào implement (xem
+    # PROJECT_CONTEXT.md §14) - thứ tự đặt tạm, cần rà lại khi 2 rule
+    # này được thêm.
+    _WARNING_CATEGORY_PRIORITY = (
+        RuleCategory.QUALITY,
+        RuleCategory.LAYOUT,
+        RuleCategory.DOCUMENT,
+        RuleCategory.GRAPHICS,
+        RuleCategory.CONSISTENCY,
+        RuleCategory.IMAGE,
+        RuleCategory.TEXT,
+    )
+
     def analyze(
         self,
         document: PDFDocument,
@@ -52,11 +88,7 @@ class PDFDetector:
         )
 
         reasons = tuple(item.reason for item in evidence if item.reason)
-        warnings = self._unique_strings(
-            warning
-            for item in evidence
-            for warning in item.warnings
-        )
+        warnings = self._evidence_warnings_ordered(evidence)
         warnings = self._unique_strings((*warnings, *knowledge_warnings))
 
         if mode is AnalysisMode.UNKNOWN:
@@ -148,6 +180,8 @@ class PDFDetector:
             self._evaluate_mixed_content_rule(context),
             self._evaluate_quality_rule(context),
             self._evaluate_layout_rule(context),
+            self._evaluate_document_rule(context),
+            self._evaluate_graphics_rule(context),
         )
 
     def _evaluate_text_rule(self, context: AnalysisContext) -> Evidence:
@@ -298,6 +332,75 @@ class PDFDetector:
             },
         )
 
+    def _evaluate_document_rule(self, context: AnalysisContext) -> Evidence:
+        """RC-001 (TDS §7.2): đánh giá đặc điểm tổng quát cấp tài liệu.
+
+        Tín hiệu duy nhất: metadata Producer/Creator chứa từ khóa gợi ý
+        phần mềm scan. Chỉ tạo supports khi CÓ tín hiệu dương tính rõ
+        ràng - vắng mặt từ khóa KHÔNG được coi là bằng chứng cho DIGITAL
+        (metadata có thể mất/ghi đè qua nhiều lần re-save, DP-003).
+        """
+        producer = str(context.metadata.get("producer", ""))
+        creator = str(context.metadata.get("creator", ""))
+        combined = f"{producer} {creator}".lower()
+        metrics = {"producer": producer, "creator": creator}
+
+        matched = [kw for kw in self._SCAN_METADATA_KEYWORDS if kw in combined]
+        if matched:
+            return Evidence(
+                rule_name="document_metadata",
+                category=RuleCategory.DOCUMENT,
+                supports={AnalysisMode.SCANNED: self._DOCUMENT_RULE_WEIGHT},
+                reason="Document metadata (Producer/Creator) references scanning software.",
+                warnings=(
+                    "Metadata-based signal is weak and easily spoofed or "
+                    "absent; not yet validated on real data.",
+                ),
+                metrics=metrics,
+            )
+
+        return Evidence(
+            rule_name="document_metadata",
+            category=RuleCategory.DOCUMENT,
+            reason="Document metadata does not reference any known scanning software.",
+            metrics=metrics,
+        )
+
+    def _evaluate_graphics_rule(self, context: AnalysisContext) -> Evidence:
+        """RC-004 (TDS §7.2): đánh giá đối tượng đồ họa/vector.
+
+        Tín hiệu duy nhất: mật độ vector drawing operations
+        (page.get_drawings(), không tính pixel ảnh) cao trên phần lớn
+        trang - PDF Scanned thuần túy (ảnh raster phủ trang) về bản
+        chất không có drawing operations. Chỉ tạo supports khi CÓ tín
+        hiệu dương tính; thiếu vector graphics không phải bằng chứng
+        cho SCANNED (nhiều hóa đơn Digital cũng không dùng khung/bảng
+        vector, DP-003).
+        """
+        metrics = {
+            "drawing_page_ratio": context.drawing_page_ratio,
+            "total_drawing_count": context.total_drawing_count,
+        }
+        if context.drawing_page_ratio >= self._GRAPHICS_DRAWING_PAGE_RATIO:
+            return Evidence(
+                rule_name="vector_graphics_coverage",
+                category=RuleCategory.GRAPHICS,
+                supports={AnalysisMode.DIGITAL: self._GRAPHICS_RULE_WEIGHT},
+                reason="Vector drawing operations occur on most pages, consistent with software-generated content.",
+                warnings=(
+                    "Vector graphics can also appear on annotated scans; "
+                    "not yet validated on real data.",
+                ),
+                metrics=metrics,
+            )
+
+        return Evidence(
+            rule_name="vector_graphics_coverage",
+            category=RuleCategory.GRAPHICS,
+            reason="Vector drawing operations are not present on most pages.",
+            metrics=metrics,
+        )
+
     def _decide_mode(
         self,
         evidence: tuple[Evidence, ...],
@@ -438,6 +541,32 @@ class PDFDetector:
     @staticmethod
     def _clamp(value: float) -> float:
         return max(0.0, min(1.0, value))
+
+    def _evidence_warnings_ordered(
+            self,
+            evidence: tuple[Evidence, ...],
+    ) -> tuple[str, ...]:
+        """
+        Gom warnings từ mọi Evidence, sắp theo _WARNING_CATEGORY_PRIORITY
+        thay vì theo thứ tự rule chạy trong _evaluate_rules() (ADR-055).
+        Category không nằm trong danh sách ưu tiên rơi xuống cuối.
+        sorted() ổn định (stable) - Evidence cùng category giữ nguyên
+        thứ tự tương đối ban đầu (không đổi hành vi khi >1 warning cùng
+        category).
+        """
+
+        def priority(item: Evidence) -> int:
+            try:
+                return self._WARNING_CATEGORY_PRIORITY.index(item.category)
+            except ValueError:
+                return len(self._WARNING_CATEGORY_PRIORITY)
+
+        ordered_evidence = sorted(evidence, key=priority)
+        return self._unique_strings(
+            warning
+            for item in ordered_evidence
+            for warning in item.warnings
+        )
 
     @staticmethod
     def _unique_strings(values: Iterable[str]) -> tuple[str, ...]:

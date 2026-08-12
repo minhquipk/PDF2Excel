@@ -198,7 +198,7 @@ class Worker(QObject):
             if analysis.mode is AnalysisMode.UNKNOWN
             else ProcessStatus.SUCCESS
         )
-        result.note = self._format_note(analysis, extraction)
+        result.note = self._format_note(analysis)
         result.invoice = invoice
         return result
 
@@ -213,18 +213,12 @@ class Worker(QObject):
         return None
 
     @staticmethod
-    def _format_note(
-            analysis: DocumentAnalysis,
-            extraction: ExtractionResult | None,
-    ) -> str:
+    def _format_note(analysis: DocumentAnalysis) -> str:
         note = (
             f"Detected {analysis.mode.name} "
             f"({analysis.confidence.level.value}: "
             f"{analysis.confidence.score:.2f})."
         )
-
-        if extraction is not None and extraction.warnings:
-            return f"{note} {extraction.warnings[0]}"
 
         if analysis.warnings:
             return f"{note} {analysis.warnings[0]}"

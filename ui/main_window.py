@@ -7,7 +7,6 @@ from PySide6.QtCore import QThread, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from ui.worker import Worker
 from PySide6.QtWidgets import (
-    QApplication,
     QFileDialog,
     QHBoxLayout,
     QMainWindow,
@@ -238,10 +237,3 @@ class MainWindow(QMainWindow):
             UIText.ERROR_TITLE,
             message,
         )
-
-
-if __name__ == "__main__":
-    app = QApplication([])
-    window = MainWindow()
-    window.show()
-    app.exec()

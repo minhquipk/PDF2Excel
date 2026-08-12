@@ -1368,3 +1368,158 @@ Confirmed trong implementation: không đổi core/pdf_reader.py (giữ
 nguyên như ADR-048); core/ocr_engine.py::OCREngine._preprocess() (ADR-053).
 
 ------------------------------------------------------------------------
+
+## ADR-055 --- Thứ Tự Ưu Tiên Hiển Thị Warning Theo RuleCategory (PDFDetector)
+
+**Status:** Accepted
+
+`Worker._format_note()` từng chọn `analysis.warnings[0]` để hiển thị lên
+UI, nhưng `DocumentAnalysis.warnings` được `PDFDetector.analyze()` tạo
+bằng cách flatten `Evidence.warnings` theo đúng thứ tự các rule chạy
+trong `_evaluate_rules()` - luôn cố định `(text_coverage, image_coverage,
+mixed_content, content_coverage, page_layout, ...)`. Hệ quả: warning
+đầu tiên luôn là của `text_coverage` (nếu có), bất kể rule này có thật
+sự đóng góp vào quyết định `mode` cuối cùng hay không - có thể hiển thị
+cảnh báo "bằng chứng yếu" của 1 rule đơn lẻ cạnh 1 kết luận High
+confidence được củng cố bởi các rule khác, gây cảm giác mâu thuẫn dù dữ
+liệu không sai. Phát hiện qua thực nghiệm Session 2026-08-08/09.
+
+**2 phương án được thảo luận:**
+- Phương án A (đã chọn): sửa tại `PDFDetector.analyze()` - sắp lại thứ
+  tự warnings theo độ ưu tiên `RuleCategory` trước khi trả về.
+- Phương án B (không chọn): sửa tại `Worker._format_note()` - tự duyệt
+  `analysis.evidence`, ưu tiên category tại tầng UI, không đổi
+  `PDFDetector`.
+
+**Lý do chọn Phương án A:** sửa đúng gốc, mọi consumer tương lai của
+`DocumentAnalysis.warnings` (không chỉ `Worker`) đều nhận thứ tự hợp lý
+mà không phải tự cài lại logic lọc riêng.
+
+**Thiết kế:** `PDFDetector._WARNING_CATEGORY_PRIORITY` định nghĩa thứ
+tự ưu tiên category (không hard-code tên rule, để tự tương thích khi
+Document/Graphics Rules được thêm - xem ADR-057): category liên quan
+**chất lượng tài liệu** (`QUALITY`, `LAYOUT`, `DOCUMENT`, `GRAPHICS`)
+ưu tiên trước category mô tả **độ không chắc chắn của riêng 1 rule**
+(`CONSISTENCY`, `IMAGE`, `TEXT`). `_evidence_warnings_ordered()` (method
+mới) sort `Evidence` theo `key=priority` (dùng `sorted()` ổn định -
+Evidence cùng category giữ nguyên thứ tự tương đối ban đầu) trước khi
+flatten thành `warnings`.
+
+**Dọn kèm:** nhánh `extraction.warnings` trong
+`Worker._format_note()` bị xóa (dead code - `Worker._process_pdf()`
+không bao giờ gọi `Extractor.extract()` khi `mode is UNKNOWN`, nên
+nhánh set `warnings` khác rỗng trong `Extractor.extract()` không bao
+giờ chạy tới trong pipeline thật). `_format_note()` nay chỉ nhận
+`analysis`, không còn nhận `extraction`.
+
+Confirmed trong implementation: `core/pdf_detector.py::PDFDetector._evidence_warnings_ordered()`,
+`PDFDetector._WARNING_CATEGORY_PRIORITY`; `ui/worker.py::Worker._format_note()`.
+
+------------------------------------------------------------------------
+
+## ADR-056 --- Extractor.extract() Raise ValueError Khi UNKNOWN (Sửa Code Khớp Lại ADR-027)
+
+**Status:** Accepted (đồng bộ hóa với ADR-027)
+
+Phát hiện qua rà soát source thật (đóng v1, Part 1): `core/extractor.py::
+Extractor.extract()` **không hề raise** `ValueError` khi
+`analysis.mode is AnalysisMode.UNKNOWN` như ADR-027 đã mô tả - code thật
+trả về gracefully `ExtractionResult(words_by_page={}, warnings=(...))`.
+Sai lệch này tồn tại xuyên suốt `ARCHITECTURE_DECISIONS.md` (ADR-027),
+`CHANGELOG.md` (mục "Extractor — New Module") và `SESSION_SUMMARIES.md`
+(Session 2026-07-31) - cả 3 đều mô tả giống nhau (raise), khác thực tế
+source.
+
+**2 phương án được thảo luận:**
+- Phương án 1 (không chọn): sửa tài liệu cho khớp code (giữ hành vi
+  graceful). Vấn đề: nhánh graceful này là dead code trong pipeline
+  thật (`Worker._process_pdf()` đã tự chặn, không bao giờ gọi
+  `extract()` với UNKNOWN) - nếu giữ graceful, 1 lỗi lập trình tương lai
+  (VD sửa `Worker` gây gọi nhầm) sẽ bị "nuốt" âm thầm thay vì lộ ra
+  ngay, vi phạm chính tinh thần ADR-027 (phân biệt "Detector không
+  quyết định được" vs "Extractor bị gọi sai hợp đồng").
+- Phương án 2 (đã chọn): sửa code cho khớp ADR-027 - thêm
+  `raise ValueError`.
+
+**Lý do chọn Phương án 2:** ADR-027 là quyết định kiến trúc có lập luận
+rõ ràng (phân định 2 tầng lỗi khác bản chất - business outcome vs
+programming-contract violation), không phải mô tả tùy tiện. Sự lệch pha
+nhiều khả năng do lúc implement code được viết graceful hơn dự định rồi
+quên đồng bộ lại. Vì `Worker` đã chặn đúng ở tầng gọi, việc thêm `raise`
+không ảnh hưởng pipeline thật hiện tại - chỉ thêm 1 lớp phòng vệ
+(defense in depth) cho lỗi lập trình tương lai.
+
+**Hệ quả kèm theo:** `ExtractionResult.warnings` (`core/models.py`)
+sau patch này không còn nơi nào gán giá trị khác rỗng trong
+`core/extractor.py` - trở thành field chết. Đã xóa khỏi
+`ExtractionResult` (khác quyết định giữ lại Nhóm B các model dự phòng
+khác - xem PROJECT_CONTEXT.md §14, field này không có ý đồ dự phòng
+nào được ghi nhận, khác `SessionResult`/`ProcessError`).
+
+Confirmed trong implementation: `core/extractor.py::Extractor.extract()`,
+`core/models.py::ExtractionResult`.
+
+------------------------------------------------------------------------
+
+## ADR-057 --- Bổ Sung Document Rules & Graphics Rules Cho PDFDetector (RC-001/RC-004)
+
+**Status:** Accepted
+
+TDS (`PDF_Detector_Technical_Design.docx` §7.2) định nghĩa 7 Rule
+Category, nhưng `PDFDetector` trước patch này chỉ implement 5/7 (Text,
+Image, Consistency, Quality, Layout) - Document (RC-001) và Graphics
+(RC-004) còn thiếu, ghi nhận là Known Issue từ Session 2026-07-29.
+
+**Xác nhận quan trọng trước khi thiết kế:** TDS §7.2 chỉ đặc tả RC-001/
+RC-004 ở mức **định tính, cấp cao** ("đánh giá đặc điểm tổng quát của
+tài liệu...", "đánh giá đối tượng đồ họa và vector...") - không có công
+thức/ngưỡng cụ thể nào, kể cả cho 5 rule đã implement (TDS Chương 5.4
+xác nhận: *"không phải mọi dữ liệu có thể thu thập đều cần trở thành
+metric... mọi diễn giải vẫn thuộc trách nhiệm của reasoning engine"*).
+Vì vậy 2 rule mới là **thiết kế mới hoàn toàn** (không phải "khôi phục"
+nội dung TDS), dựa trên field đã có sẵn trong `AnalysisContext` nhưng
+trước đó chưa được dùng để tạo `supports`.
+
+**Document Rule (`document_metadata`, category `DOCUMENT`):** dùng
+`AnalysisContext.metadata` (Producer/Creator). Nếu chứa từ khóa gợi ý
+phần mềm scan (`_SCAN_METADATA_KEYWORDS`: scan/scanner/scanned/
+camscanner/adobe scan/naps2/vuescan/scansnap) -> `supports={SCANNED:
+0.20}`. **Không** tạo `supports` cho DIGITAL khi thiếu từ khóa (vắng
+mặt tín hiệu không phải bằng chứng - metadata có thể mất/ghi đè qua
+nhiều lần re-save, đúng DP-003 "Explainability First"/nguyên tắc chỉ
+suy luận từ tín hiệu dương tính đã áp dụng nhất quán ở 5 rule cũ).
+
+**Graphics Rule (`vector_graphics_coverage`, category `GRAPHICS`):**
+dùng `AnalysisContext.drawing_page_ratio` (đã tồn tại sẵn, trước đó chỉ
+nằm trong `metrics` phụ của `content_coverage`, chưa từng ảnh hưởng
+`supports`). Cơ sở: PDF Scanned thuần túy (ảnh raster phủ trang) về bản
+chất không có vector drawing operations
+(`page.get_drawings()` không tính pixel ảnh). Nếu
+`drawing_page_ratio >= 0.50` -> `supports={DIGITAL: 0.20}`. Tương tự,
+không tạo `supports` cho SCANNED khi thiếu vector graphics (nhiều hóa
+đơn Digital cũng không dùng khung/bảng vector - không phải bằng chứng).
+
+**Trọng số 0.20 cho cả 2 rule (thấp, cố ý):** cả 2 rule đều **chưa qua
+thực nghiệm với PDF thật đa dạng** (khác 5 rule cũ đã verify trên PDF
+thật) - trọng số thấp để không làm lệch các quyết định biên (DIGITAL/
+HYBRID) vốn đã ổn định. Đã tự kiểm tra: tổng `supports` tối đa theo
+từng mode sau khi thêm 2 rule mới (DIGITAL <= 0.90, SCANNED <= 1.15,
+HYBRID <= 1.00) đều dưới `_EVIDENCE_SCORE_SCALE = 1.40` - không cần
+hiệu chỉnh scale này.
+
+**Đánh dấu placeholder (cùng nhóm `TemplateMatching.*`):**
+`_DOCUMENT_RULE_WEIGHT`, `_GRAPHICS_RULE_WEIGHT`,
+`_GRAPHICS_DRAWING_PAGE_RATIO = 0.50`, `_SCAN_METADATA_KEYWORDS` đều là
+giá trị ước lượng ban đầu, CẦN TINH CHỈNH khi có dữ liệu PDF thật đa
+dạng hơn - danh sách từ khóa scan dựa trên tri thức chung, chưa verify
+đối chiếu với metadata PDF Scanned thật của dự án.
+
+Verify: chạy thật trên PDF Digital và PDF Scanned đã dùng trước đây -
+`DocumentAnalysis.evidence` có đủ 7 phần tử, mode cuối cùng không đổi
+so với trước patch (đúng kỳ vọng do trọng số thấp, chỉ ảnh hưởng case
+biên gần tie-margin).
+
+Confirmed trong implementation: `core/pdf_detector.py::PDFDetector._evaluate_document_rule()`,
+`PDFDetector._evaluate_graphics_rule()`, `PDFDetector._evaluate_rules()`.
+
+------------------------------------------------------------------------
