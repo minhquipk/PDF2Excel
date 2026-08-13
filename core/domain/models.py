@@ -17,7 +17,7 @@ from datetime import date, datetime, UTC
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Optional, Any, Mapping
-from core.enums import (
+from core.domain.enums import (
     ConfidenceLevel,
     ErrorType,
     PDFType,

@@ -10,7 +10,7 @@ Quy ước:
 from __future__ import annotations
 import logging
 from config import LOG_DIR
-from core.constants import Logging as LoggingConfig
+from core.domain.constants import Logging as LoggingConfig
 
 _CONFIGURED = False
 

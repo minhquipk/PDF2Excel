@@ -6,7 +6,7 @@ Hiện tại:
 from __future__ import annotations
 from pathlib import Path
 from PySide6.QtCore import Signal
-from core.constants import Progress, UIText
+from core.domain.constants import Progress, UIText
 from ui.base_widget import BaseWidget
 from PySide6.QtWidgets import (
     QHBoxLayout,

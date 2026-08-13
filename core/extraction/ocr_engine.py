@@ -18,8 +18,8 @@ import numpy as np
 import pytesseract
 from PIL import Image
 from config import TESSDATA_DIR
-from core.constants import OCR
-from core.models import PageImage
+from core.domain.constants import OCR
+from core.domain.models import PageImage
 
 
 class OCREngine:

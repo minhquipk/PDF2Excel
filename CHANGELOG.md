@@ -1055,3 +1055,64 @@ ADR-050 (app.log). Tóm tắt các thay đổi cuối cùng còn lại trong sou
   định hoãn, không thuộc phạm vi đóng v1 code).
 
 ------------------------------------------------------------------------
+
+## 2026-08-13 — Đóng v1, Part 2/3: Xử lý vấn đề người dùng tự ghi nhận
+
+### Fixed
+- `models/processing_table_model.py` (nay `ui/models/processing_table_model.py`)::`ProcessingTableModel.data()`
+  cột PDF: hiển thị `relative_path` thay vì `file_name`, tránh trùng
+  tên khi Input Folder chứa nhiều thư mục con lồng nhau (VD "Quý 3" ->
+  "Tháng 7/8/9", mỗi thư mục có file trùng tên). Xem ADR-058.
+- `core/report_writer.py` (nay `core/export/report_writer.py`)::`ReportWriter._log_results()`:
+  log `relative_path` thay vì `file_name`. `_format_report()` mục
+  Warnings: bỏ cắt `.name`, giữ nguyên full absolute path của
+  `warning.source_file`. Xem ADR-058.
+
+### Changed
+- **Tái cấu trúc toàn bộ `core/` theo pipeline stage**
+  (`domain/`, `reading/`, `detection/`, `extraction/`, `parsing/`
+  + `parsing/template/`, `export/`), đổi `models/` top-level thành
+  `ui/models/`. Triển khai theo 7 bước tuần tự, mỗi bước verify độc
+  lập (`pytest -v` + chạy thật). Không đổi hành vi hệ thống, chỉ đổi
+  vị trí file + đường dẫn import. Xem ADR-060, PROJECT_CONTEXT.md §3.
+- `tests/core/test_extractor.py` di chuyển thành
+  `tests/core/extraction/test_extractor.py`, mirror cấu trúc `core/`
+  mới.
+
+### Verified
+- Memory lifecycle review: xác nhận `fitz.Document` đóng đúng qua
+  context manager (`PDFReader.read()`), `PDFDocument`/`ExtractionResult`
+  giải phóng đúng sau `_process_pdf()` (không leak, khớp ADR-006/007).
+  Phát hiện phụ: số liệu chi phí `PageImage`/trang trong ADR-048 lỗi
+  thời sau khi ADR-053 tăng DPI 300->450 - đã đính chính (~56 MB/trang
+  thay vì ~24.9 MB, xem amend ADR-048).
+- `excel_mapping.json` khai ít cột hơn `InvoiceInfo` (VD 6/12 field):
+  xác nhận qua đọc source (`Mapper.load()`, `ExcelWriter._write_row()`,
+  `_resolve_columns()`) - hệ thống hoạt động đúng theo thiết kế sẵn có,
+  không cần sửa code (khớp mô tả EXCEL_MAPPING_GUIDE.md Mục 3).
+- `_merge_same_line()` lookup `anchor_idx` bằng so sánh
+  `normalized_bbox`+`text` (value-equality thay vì identity): xác nhận
+  `StopIteration` không thể xảy ra kể cả khi có 2 `WordToken` trùng giá
+  trị tuyệt đối (anchor luôn tự thỏa điều kiện tìm chính nó); rủi ro
+  "nhầm object" tồn tại về lý thuyết nhưng vô hại (2 token trùng giá
+  trị tuyệt đối cho kết quả merge giống hệt nhau). Không sửa code -
+  rủi ro thuần lý thuyết, cùng nhóm ADR-044/045.
+- PDFDetector confidence score tăng sau khi thêm Document/Graphics Rule
+  (ADR-057): xác nhận là hệ quả cơ học đúng thiết kế (ADR-020/021,
+  Evidence -> Score -> Decision), KHÔNG ảnh hưởng quyết định `mode`
+  (confidence chỉ dùng hiển thị trong `PDFResult.note`, không gate
+  logic nào). Lưu ý rủi ro circular validation (2 rule mới chỉ verify
+  trên đúng 1-2 file PDF đã dùng tinh chỉnh mọi thứ khác) - cần thêm dữ
+  liệu đa dạng trước khi tinh chỉnh weight khỏi trạng thái placeholder.
+
+### Cancelled (đã thảo luận, quyết định không triển khai)
+- Đề xuất tiền xử lý ảnh OCR nâng cao (Binarization/Otsu/Adaptive
+  Thresholding, Denoising/Gaussian Blur riêng biệt, Border Removal) -
+  huỷ bỏ triển khai ở v1, ghi nhận "tăng cường hiệu quả OCR" là ưu
+  tiên quan trọng cho v2.0. Xem PROJECT_CONTEXT.md §18.
+- 2 hướng giải quyết vấn đề multi-line value / `max_distance` tĩnh
+  (window động theo Key/Section kế tiếp; khóa `direction=BELOW`) - bác
+  bỏ sau phân tích, xác nhận đây là giới hạn kiến trúc không patch
+  được ở v1. Xem ADR-059.
+
+------------------------------------------------------------------------

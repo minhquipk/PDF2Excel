@@ -14,9 +14,9 @@ Quy ước:
 
 from __future__ import annotations
 from typing import Any
-from core.models import ExtractionResult, InvoiceInfo
-from core.template_matcher import TemplateMatcher
-from core.value_converter import ValueConverter
+from core.domain.models import ExtractionResult, InvoiceInfo
+from core.parsing.template.template_matcher import TemplateMatcher
+from core.parsing.template.value_converter import ValueConverter
 
 
 class Parser:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 from typing import Iterable
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
-from core.constants import Table
-from core.models import PDFResult
+from core.domain.constants import Table
+from core.domain.models import PDFResult
 from enum import IntEnum
 
 
@@ -37,7 +37,7 @@ class ProcessingTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.DisplayRole:
             c = index.column()
             if c == Column.PDF:
-                return getattr(item, 'file_name', '')
+                return str(getattr(item, 'relative_path', '')) or getattr(item, 'file_name', '')
             if c == Column.TYPE:
                 v = getattr(item, 'pdf_type', '')
                 return getattr(v, 'name', str(v))

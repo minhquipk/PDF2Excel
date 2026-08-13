@@ -4,8 +4,8 @@ from __future__ import annotations
 from hashlib import sha256
 from json import dumps
 from collections.abc import Iterable
-from core.enums import ConfidenceLevel, RuleCategory
-from core.models import (
+from core.domain.enums import ConfidenceLevel, RuleCategory
+from core.domain.models import (
     AnalysisContext,
     AnalysisMode,
     Confidence,

@@ -12,9 +12,9 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from core.enums import ValueType
-from core.models import FieldDefinition
-from core.constants import NumberRepair
+from core.domain.enums import ValueType
+from core.domain.models import FieldDefinition
+from core.domain.constants import NumberRepair
 
 # Giá trị mặc định khi FieldDefinition.decimal_format không khai báo.
 # Khớp quy ước phân cách số của hóa đơn Việt Nam (ADR-014: Vietnamese Data).

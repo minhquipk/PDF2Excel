@@ -25,9 +25,9 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from rapidfuzz import fuzz
-from core.constants import TemplateMatching
-from core.enums import SpatialDirection, ValueType
-from core.models import (
+from core.domain.constants import TemplateMatching
+from core.domain.enums import SpatialDirection, ValueType
+from core.domain.models import (
     ExtractionResult,
     FieldDefinition,
     SectionDefinition,

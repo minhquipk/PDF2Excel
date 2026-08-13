@@ -3,15 +3,15 @@ from pathlib import Path
 from typing import Optional
 from PySide6.QtCore import QObject, Signal, Slot
 from config import EXCEL_MAPPING_PATH, REPORTS_DIR, TEMPLATES_DIR
-from core.enums import PDFType, ProcessStatus
-from core.excel_mapper import Mapper, MappingError
-from core.excel_writer import (
+from core.domain.enums import PDFType, ProcessStatus
+from core.export.excel_mapper import Mapper, MappingError
+from core.export.excel_writer import (
     ExcelTableNotFoundError,
     ExcelWriter,
     WorkbookNotFoundError,
     WorkbookSaveError,
 )
-from core.models import (
+from core.domain.models import (
     AnalysisMode,
     DocumentAnalysis,
     ExcelWriteResult,
@@ -19,13 +19,13 @@ from core.models import (
     InvoiceInfo,
     PDFResult,
 )
-from core.pdf_detector import PDFDetector
-from core.pdf_reader import PDFReader
-from core.extractor import Extractor
-from core.parser import Parser
-from core.template_loader import TemplateLoader
-from core.template_matcher import TemplateMatcher
-from core.report_writer import ReportWriter
+from core.detection.pdf_detector import PDFDetector
+from core.reading.pdf_reader import PDFReader
+from core.extraction.extractor import Extractor
+from core.parsing.parser import Parser
+from core.parsing.template.template_loader import TemplateLoader
+from core.parsing.template.template_matcher import TemplateMatcher
+from core.export.report_writer import ReportWriter
 
 
 class Worker(QObject):

@@ -14,7 +14,7 @@ import json
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
-from core.models import ExcelMapping, InvoiceInfo
+from core.domain.models import ExcelMapping, InvoiceInfo
 
 
 class MappingError(Exception):

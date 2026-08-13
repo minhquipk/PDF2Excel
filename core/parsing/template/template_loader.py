@@ -14,8 +14,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from core.enums import SpatialDirection, ValueType
-from core.models import FieldDefinition, SectionDefinition, SpatialRelation, TemplateDefinition
+from core.domain.enums import SpatialDirection, ValueType
+from core.domain.models import FieldDefinition, SectionDefinition, SpatialRelation, TemplateDefinition
 from utils.logger import get_logger
 
 logger = get_logger(__name__)

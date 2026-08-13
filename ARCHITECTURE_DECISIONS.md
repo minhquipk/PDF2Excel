@@ -1064,6 +1064,14 @@ vẫn là constant chưa dùng tới).
 Confirmed trong implementation: `core/pdf_reader.py::PDFReader._render_page_image()`,
 `core/models.py::PageImage`, `core/constants.py::Image`.
 
+**Ghi chú bổ sung (chưa phải ADR riêng, chỉ đính chính số liệu):** con
+số "~24.9 MB/trang" trong ADR-048 được tính ở 300 DPI - thời điểm ADR
+này được chốt. Sau đó ADR-053 tăng `Image.DPI` 300->450 (hệ số diện
+tích (450/300)^2 = 2.25x), nhưng chưa có ADR/CHANGELOG nào cập nhật lại
+con số per-page cho khớp cấu hình hiện tại. Ước tính đúng ở 450 DPI,
+khổ A4, RGB: ~24.9 x 2.25 ≈ **56 MB/trang**. Quyết định giữ RGB của
+ADR-048/054 không đổi - chỉ đính chính số liệu minh họa chi phí.
+
 ------------------------------------------------------------------------
 
 ## ADR-049 --- OCR Deskew: Giữ Nguyên Canvas + Ngưỡng Chặn Góc Giả (DESKEW_MAX_ANGLE)
@@ -1521,5 +1529,224 @@ biên gần tie-margin).
 
 Confirmed trong implementation: `core/pdf_detector.py::PDFDetector._evaluate_document_rule()`,
 `PDFDetector._evaluate_graphics_rule()`, `PDFDetector._evaluate_rules()`.
+
+------------------------------------------------------------------------
+
+## ADR-058 --- Hiển Thị relative_path Thay Vì file_name Để Tránh Trùng Tên Giữa Các Thư Mục Con
+
+Status: Accepted
+
+Phát hiện qua thảo luận thực tế (không phải bug report từ chạy thật):
+khi Input Folder được chọn là 1 thư mục cha chứa nhiều thư mục con (VD
+"Quý 3" chứa "Tháng 7"/"Tháng 8"/"Tháng 9", mỗi thư mục con có file
+trùng tên như HD_001.pdf), `Worker.process()` dùng `rglob("*.pdf")`
+đã quét đúng toàn bộ 300 file không sót/không ghi đè - tầng discovery
+không có vấn đề. Nhưng toàn bộ nơi hiển thị/ghi log (`ProcessingTableModel`,
+`ReportWriter._log_results()`, `ReportWriter._format_report()` mục
+Warnings) đều dùng `PDFResult.file_name` (chỉ basename) - khiến 3 dòng
+từ 3 thư mục con khác nhau hiển thị/log giống hệt nhau, mất khả năng
+truy vết dù dữ liệu Excel không sai (mỗi `InvoiceInfo` vẫn là object
+độc lập, ghi đúng dòng riêng).
+
+`PDFResult.relative_path` đã được `Worker._process_pdf()` tính sẵn từ
+đầu (`pdf_file.relative_to(self._input_folder)`), tự nhiên mang theo
+tên thư mục con, nhưng không có nơi nào tiêu thụ field này.
+
+Giải pháp (2 phần, tối thiểu, không đổi contract dữ liệu):
+
+1. `ProcessingTableModel.data()` cột PDF: đổi từ `item.file_name` sang
+   `str(item.relative_path) or item.file_name` (fallback an toàn nếu
+   `relative_path` rỗng).
+2. `ReportWriter._log_results()`: log `result.relative_path` thay vì
+   `result.file_name`.
+3. `ReportWriter._format_report()` mục Warnings: bỏ `Path(warning.source_file).name`,
+   giữ nguyên `warning.source_file` (full absolute path). Quyết định
+   KHÔNG đổi `InvoiceInfo.source_file` sang lưu relative path (phương
+   án B2 đã cân nhắc và loại bỏ) - vì field này còn phục vụ mục đích
+   khác (có thể được map trực tiếp vào cột Excel qua `excel_mapping.json`,
+   xem EXCEL_MAPPING_GUIDE.md Mục 4); đổi ý nghĩa field sẽ ảnh hưởng dữ
+   liệu Excel của end-user, vượt phạm vi tối thiểu cần thiết để giải
+   quyết vấn đề trùng tên hiển thị.
+
+Không đổi: `Table.COLUMN_WIDTH` (280px cho cột PDF) giữ nguyên - người
+vận hành tự resize nếu cần xem path dài, không coi là lỗi.
+
+Confirmed trong implementation: `models/processing_table_model.py`
+(nay `ui/models/processing_table_model.py`, xem ADR-060)::ProcessingTableModel.data(),
+`core/report_writer.py` (nay `core/export/report_writer.py`)::ReportWriter._log_results(),
+`_format_report()`. Verify: chạy thật kịch bản "Quý 3 -> Tháng 7/8/9 ->
+HD_001...HD_100 trùng tên" - UI Table/app.log/report.txt đều phân biệt
+đúng theo thư mục con.
+
+------------------------------------------------------------------------
+
+## ADR-059 --- Giới Hạn Kiến Trúc Của TemplateMatcher Với Giá Trị Đa Dòng (Multi-line Value) - Không Phải Bug, Không Patch Được Ở Tầng Heuristic
+
+Status: Accepted (ghi nhận giới hạn, không triển khai giải pháp ở v1)
+
+Phát hiện qua thảo luận đánh giá rủi ro (chưa gặp thật trên dữ liệu
+test hiện có - `HD2026-0003_digital.pdf` A4 chuẩn; đánh giá dựa trên
+suy luận cho các layout chưa test: PDF khổ A5, hoặc bảng biểu phụ với
+mật độ nội dung khác).
+
+Vấn đề gồm 2 khía cạnh liên quan cùng gốc rễ:
+
+1. **`max_distance`/`axis_tolerance` là tỉ lệ hình học TĨNH**, khai
+   báo 1 lần trong Template JSON, tinh chỉnh thực nghiệm trên đúng 1
+   layout cụ thể (A4, xem Session 2026-08-07). Với layout khác (A5,
+   bảng phụ font nhỏ/cột hẹp), tỉ lệ khoảng cách nhãn-giá trị thay đổi
+   tương đối so với A4 - `max_distance` cũ có thể quá rộng (quét trúng
+   field lân cận) hoặc quá hẹp (bỏ sót giá trị bị đẩy sang dòng khác
+   do wrap).
+2. **`_merge_same_line()` (ADR-044) chủ động giới hạn trong đúng 1
+   dòng** - đây là quyết định thiết kế tường minh khi giải quyết "field
+   nhiều TỪ trên cùng dòng" (company_name, address ngắn), nhưng CHƯA
+   từng xử lý "giá trị trải dài NHIỀU DÒNG" (VD địa chỉ dài phải wrap
+   xuống dòng, tên đơn vị 2 dòng).
+
+Bản chất vấn đề: **ranh giới đúng của 1 giá trị chỉ có thể suy ra từ
+ngữ nghĩa/nội dung** (dòng kế tiếp là phần tiếp của giá trị hiện tại,
+hay là nhãn của field khác?) - không thể suy ra thuần túy từ tọa độ
+hình học. Đây là bài toán "gà và trứng": độ dài giá trị (ngắn->1 dòng,
+dài->nhiều dòng) chỉ biết được SAU KHI đã xác định đúng ranh giới, nhưng
+ranh giới lại cần biết trước độ dài để xác định.
+
+Đã cân nhắc và BÁC BỎ 2 hướng vá:
+
+- **Window động theo Key Token/Section kế tiếp làm biên** (tương tự cơ
+  chế `_resolve_sections()` dùng vị trí section kế tiếp làm ranh giới
+  khối, ADR-045): không khả thi cho Value Matching per-field vì không
+  đảm bảo có mốc chắn chắn xuất hiện phía sau - khác Section (luôn có
+  giả định layout hóa đơn có khối kế tiếp), 1 field đơn lẻ không có gì
+  đảm bảo field kế tiếp trong `TemplateDefinition.fields` sẽ match được
+  trên đúng tài liệu này, kế thừa rủi ro thất bại dây chuyền ở phạm vi
+  rộng hơn per-section.
+- **Multi-direction/khóa `direction=BELOW` cho field dễ wrap**: không
+  đủ linh động - cùng 1 field (VD company_name) có thể ngắn (1 dòng,
+  cần RIGHT) hoặc dài (nhiều dòng, cần BELOW) tùy nội dung thật của
+  từng hóa đơn cụ thể, không thể khóa cứng hướng trong Template JSON.
+
+**Kết luận kiến trúc:** đây KHÔNG phải bug có thể patch bằng cách thêm
+rule/tinh chỉnh tham số ở tầng `TemplateMatcher` hiện tại. Nó là giới
+hạn NỀN TẢNG của phương pháp hình học tĩnh (geometric heuristics) khi
+`SpatialRelation` được khai báo cố định trước khi biết nội dung thật -
+không có khả năng "đọc hiểu" ngữ nghĩa dòng kế tiếp. Mọi giải pháp
+hình học (kể cả window động, kể cả multi-direction) đều chỉ là xấp xỉ
+có breaking case.
+
+Lời giải triệt để đã được CHANGELOG.md ghi nhận từ Session 2026-08-01/02
+("v2.0 planning: LayoutLMv3-based Parser upgrade... `WordToken.normalized_bbox`
+cố tình giữ `[0.0, 1.0]` và model-agnostic") - `TemplateMatcher` hình
+học là engine v1, thay bằng model có khả năng đọc hiểu bố cục
+(LayoutLM-class) là hướng đi đã định sẵn cho v2.0, không phải điều
+chỉnh thêm heuristic cho v1.
+
+Quyết định: KHÔNG triển khai giải pháp ở v1. Ghi nhận là giới hạn kiến
+trúc đã biết, chờ v2.0. Không xếp cùng nhóm "known limitation cần tinh
+chỉnh tham số" (khác ADR-044/045/052 - những rủi ro đó có thể giảm
+thiểu bằng tinh chỉnh threshold/heuristic bổ sung); đây là giới hạn cấu
+trúc không patch được trong cùng kiến trúc.
+
+Không có implementation nào để confirm (quyết định KHÔNG code) - ghi
+nhận thuần túy làm cơ sở củng cố lý do tồn tại của kế hoạch v2.0
+LayoutLM.
+
+------------------------------------------------------------------------
+
+## ADR-060 --- Tái Cấu Trúc core/ Theo Pipeline Stage; ui/models/ Thay models/ Top-Level
+
+Status: Accepted
+
+Từ khi khởi tạo dự án, `core/` chứa 13 file phẳng trong cùng 1 thư mục,
+gộp chung nhiều tầng trách nhiệm pipeline khác nhau (Reading/Detection/
+Extraction/Parsing/Export) đã có ADR riêng biệt từ trước (ADR-016/020/
+024/029/037) nhưng không phản ánh qua cấu trúc thư mục thật. Ý tưởng
+tái cấu trúc đã được ghi nhận sẵn từ Session 2026-08-01/02
+(CHANGELOG.md §18 Future Improvements: "core/parsing/template/,
+core/parsing/layoutlm/") nhưng chưa triển khai.
+
+Động lực triển khai ngay bây giờ (trước khi bắt đầu v2.0): kế hoạch
+v2.0 dự kiến bổ sung/thay đổi nhiều model cho các module hiện có (đặc
+biệt Parser: thêm engine LayoutLM song song TemplateMatcher, xem
+ADR-029/ADR-059) - cấu trúc phẳng hiện tại sẽ càng khó quản lý khi số
+lượng file trong `core/` tăng thêm.
+
+**Cấu trúc mới:**
+```
+config.py
+main.py
+requirements.txt
+requirements-dev.txt
+
+ui/
+    base_widget.py
+    widgets.py
+    main_window.py
+    theme.py
+    worker.py
+    models/
+        processing_table_model.py
+
+utils/
+    logger.py
+
+core/
+    domain/
+        models.py
+        enums.py
+        constants.py
+    reading/
+        pdf_reader.py
+    detection/
+        pdf_detector.py
+    extraction/
+        extractor.py
+        ocr_engine.py
+    parsing/
+        parser.py
+        template/
+            template_loader.py
+            template_matcher.py
+            value_converter.py
+    export/
+        excel_mapper.py
+        excel_writer.py
+        report_writer.py
+
+tests/
+    core/
+        extraction/
+            test_extractor.py
+
+resources/
+    excel_mapping.json
+    EXCEL_MAPPING_GUIDE.md
+    TEMPLATE_AUTHORING_GUIDE.md
+    templates/
+        sample_invoice_v1.json
+```
+Mỗi thư mục package mới đều có `__init__.py` rỗng - nhất quán quy ước
+đã có sẵn (`tests/__init__.py`, `tests/core/__init__.py` đã rỗng từ
+trước), chọn regular package (explicit `__init__.py`) thay vì namespace
+package (PEP 420, ngầm định) để giữ tính tường minh và tương thích tool
+(linter/IDE static analysis) xuyên suốt dự án.
+
+`config.py` ở root KHÔNG đổi - mọi import `from config import ...` vẫn
+hoạt động đúng từ bất kỳ độ sâu nào trong `core/` (absolute import từ
+root), không phụ thuộc vị trí file gọi.
+
+Triển khai theo 7 bước tuần tự (đúng Rule 2/3, mỗi bước 1 nhóm
+module, compile+run+verify trước khi sang bước kế): (1) domain/ - hub,
+sửa import ở TẤT CẢ file phụ thuộc; (2) ui/models/; (3) reading/;
+(4) detection/; (5) extraction/ + di chuyển test tương ứng;
+(6) parsing/ + parsing/template/; (7) export/. Bước cuối: chạy lại
+toàn bộ `pytest -v` + 1 lượt UI thật end-to-end làm xác nhận tổng.
+
+Confirmed trong implementation: toàn bộ `core/*.py` đã di chuyển theo
+cấu trúc trên, `ui/worker.py`/`utils/logger.py`/`ui/widgets.py`/
+`ui/main_window.py` đã cập nhật import tương ứng. Verify: đã chạy
+`pytest -v` + UI thật end-to-end (Input Folder -> Start -> Report) sau
+khi hoàn tất toàn bộ 7 bước - xác nhận hành vi hệ thống không đổi, chỉ
+đường dẫn file đổi.
 
 ------------------------------------------------------------------------

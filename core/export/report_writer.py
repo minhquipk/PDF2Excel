@@ -14,9 +14,9 @@ không có timestamp trong tên file.
 from __future__ import annotations
 import logging
 from pathlib import Path
-from core.constants import Report
-from core.enums import ProcessStatus
-from core.models import ExcelWriteResult, PDFResult
+from core.domain.constants import Report
+from core.domain.enums import ProcessStatus
+from core.domain.models import ExcelWriteResult, PDFResult
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -57,7 +57,7 @@ class ReportWriter:
             logger.log(
                 level,
                 "%s | %s | %s",
-                result.file_name,
+                result.relative_path,
                 result.status.value,
                 result.note,
             )
@@ -87,8 +87,7 @@ class ReportWriter:
 
         if excel_result.warnings:
             for warning in excel_result.warnings:
-                file_name = Path(warning.source_file).name
-                lines.append(f"Invoice {file_name}: {warning.field_name}=None")
+                lines.append(f"Invoice {warning.source_file}: {warning.field_name}=None")
         else:
             lines.append("(none)")
 

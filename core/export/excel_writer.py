@@ -26,7 +26,7 @@ from pathlib import Path
 import openpyxl
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.cell import range_boundaries
-from core.models import ExcelMapping, ExcelWriteResult, InvoiceInfo, InvoiceWarning
+from core.domain.models import ExcelMapping, ExcelWriteResult, InvoiceInfo, InvoiceWarning
 
 
 class WorkbookNotFoundError(Exception):

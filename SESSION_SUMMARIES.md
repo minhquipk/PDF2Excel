@@ -1584,3 +1584,216 @@ tài liệu với source thật" mà dự án đã áp dụng nhất quán từ 
 hiện được nhờ rà soát trực tiếp, không phải vì tài liệu tự báo lỗi.
 
 ------------------------------------------------------------------------
+
+# Session 2026-08-13 — Đóng v1, Part 2/3
+
+## Objective
+
+Xử lý Part 2/3 trong kế hoạch đóng v1 (vấn đề do người dùng tự ghi
+nhận qua rà soát/thảo luận trực tiếp, không phải từ log tồn đọng sẵn).
+7 chủ đề được đặt ra tuần tự: memory management, PDFResult trùng tên,
+confidence score tăng theo rule, excel_mapping.json thiếu cột, rủi ro
+`_merge_same_line()`, multi-line value/max_distance, tiền xử lý ảnh
+OCR nâng cao, và tái cấu trúc thư mục project (được người dùng xác
+định là ưu tiên cao nhất để kết thúc v1).
+
+## Completed
+
+### 1. Rà soát cơ chế quản lý memory
+
+Xác nhận `PDFReader.read()` đóng file PDF đúng qua context manager
+(mọi thao tác đọc nằm trong `with fitz.open(...)`, return nằm ngoài).
+`PDFDocument`/`ExtractionResult` là biến local của `Worker._process_pdf()`,
+không bị giữ tham chiếu ngược từ `InvoiceInfo` - giải phóng đúng theo
+ADR-006/007. Phát hiện phụ: số liệu ADR-048 (~24.9 MB/trang) lỗi thời
+sau khi ADR-053 tăng DPI 300->450 - đính chính lại ~56 MB/trang.
+
+### 2. `PDFResult` — vòng đời và ước lượng chi phí
+
+Xác nhận việc tích lũy `list[PDFResult]` cho cả batch là có chủ đích
+(không chỉ cần `list[InvoiceInfo]`) - phục vụ 2 kênh tiêu thụ khác
+(`ReportWriter._log_results()` log MỌI file kể cả FAILED; UI
+`ProcessingTable` hiển thị real-time). Ước lượng: ~770 bytes/file
+(invoice=None) đến ~2.4 KB/file (có invoice đầy đủ) - ở quy mô 10.000
+file ước ~24 MB, nhẹ hơn 3-4 bậc so với chi phí `PageImage` 1 trang.
+
+Phát hiện phụ dẫn tới chủ đề tiếp theo: `source_file`/`relative_path`
+được gán nhưng không thấy nơi nào đọc lại trong source thời điểm đó.
+
+### 3. Vấn đề PDFResult trùng tên khi Input Folder có thư mục con lồng nhau
+
+Người dùng xác nhận đây là tình huống thiết kế ban đầu dự tính xử lý
+(VD "Quý 3" chứa "Tháng 7/8/9", mỗi tháng có HD_001...HD_100 trùng
+tên). Xác nhận tầng discovery (`rglob`) đã đúng; `relative_path` đã
+được tính sẵn nhưng không nơi nào tiêu thụ - mọi hiển thị/log đều dùng
+`file_name` (basename only). Thảo luận 2 hướng (A: đổi sang dùng
+relative_path; B: giữ file_name + thêm cột phụ) - chọn Hướng A, không
+thêm cột, không đổi width. Với phần Warnings trong report.txt, thảo
+luận thêm 2 phương án con (B1: giữ full absolute path; B2: đổi
+`InvoiceInfo.source_file` sang relative) - chọn B1 (tối thiểu, không
+đổi ý nghĩa field đang phục vụ mục đích khác là dữ liệu Excel). Đã
+triển khai, người dùng xác nhận áp dụng và verify xong. Xem ADR-058.
+
+### 4. Đánh giá confidence score tăng sau khi thêm Document/Graphics Rule
+
+Người dùng quan sát score tăng sau khi triển khai ADR-057 (Session
+2026-08-12), đặt câu hỏi đây có phải vấn đề cần quan tâm. Phân tích
+công thức `_compose_confidence()` xác nhận đây là hệ quả cơ học đúng
+thiết kế (Evidence -> Score -> Decision, ADR-020/021), và xác nhận qua
+rà soát toàn bộ nơi đọc `DocumentAnalysis.confidence` trong source:
+CHỈ dùng hiển thị trong `PDFResult.note`, không gate quyết định `mode`
+hay bất kỳ logic nào khác trong pipeline - nên không phải vấn đề cấp
+thiết. Lưu ý rủi ro circular validation (2 rule mới, ADR-057, mới chỉ
+verify trên đúng 1-2 file PDF đã dùng tinh chỉnh mọi thứ khác trong dự
+án) - ghi nhận cần thêm dữ liệu đa dạng trước khi tinh chỉnh weight.
+Người dùng xác nhận không cần ghi nhận riêng.
+
+### 5. `excel_mapping.json` khai ít cột hơn InvoiceInfo
+
+Trả lời câu hỏi "nếu admin chỉ khai 6/12 field, hệ thống có hoạt động
+đúng không" - xác nhận CÓ, bằng cách truy trực tiếp `Mapper.load()`
+(chỉ validate `columns` không rỗng + field_name hợp lệ, không yêu cầu
+đủ), `Parser` vẫn trích đủ 12 field (không phụ thuộc mapping),
+`ExcelWriter._write_row()` chỉ duyệt đúng field đã mapping - khớp mô tả
+sẵn có trong `EXCEL_MAPPING_GUIDE.md` Mục 3. Không cần sửa code.
+
+### 6. Rủi ro `_merge_same_line()` — lookup `anchor_idx` bằng value-equality
+
+Người dùng đặt vấn đề `next(... t.normalized_bbox == anchor.normalized_bbox and t.text == anchor.text)`
+có thể `StopIteration` nếu 2 token trùng hoàn toàn. Phân tích xác nhận
+KHÔNG THỂ xảy ra về mặt toán học (`anchor` luôn là phần tử của chính
+`candidates`, tự thỏa điều kiện lọc `same_line` qua chính `anchor_y`).
+Rủi ro thực chất hơn được xác nhận: nếu tồn tại 2 `WordToken` khác
+instance nhưng trùng giá trị tuyệt đối (bbox+text), `next()` có thể trả
+về "nhầm" object - nhưng vì 2 token trùng giá trị tuyệt đối, kết quả
+merge giống hệt nhau bất kể chọn object nào -> vô hại. Người dùng xác
+nhận không cần sửa, chuyển sang chủ đề tiếp theo.
+
+### 7. Multi-line value / phụ thuộc `max_distance` tĩnh
+
+Người dùng đặt vấn đề (dựa trên đánh giá rủi ro, chưa gặp thật trên A4,
+nghi ngờ sẽ gặp với A5/bảng biểu phụ): 2 vấn đề liên quan
+("hạn chế phụ thuộc max_distance"; "giá trị trải nhiều dòng"). Đề xuất
+ban đầu (window động theo Key/Section kế tiếp; khóa direction=BELOW)
+bị người dùng bác bỏ với lý do xác đáng (không đảm bảo có mốc chặn phía
+sau; direction không thể khóa cứng vì độ dài giá trị phụ thuộc nội dung
+thật). Xác nhận lại: đây là giới hạn KIẾN TRÚC của phương pháp hình học
+tĩnh (`SpatialRelation` khai báo cố định, không đọc hiểu ngữ nghĩa),
+không phải bug patch được ở tầng heuristic. Liên hệ với kế hoạch v2.0
+LayoutLM đã ghi nhận sẵn từ Session 2026-08-01/02. Người dùng đồng ý
+đánh giá, yêu cầu ghi nhận nghiêm túc (không phải "known limitation cần
+tinh chỉnh tham số" như các mục khác). Xem ADR-059.
+
+### 8. Đề xuất tiền xử lý ảnh OCR nâng cao — huỷ bỏ
+
+Người dùng đề xuất 3 kỹ thuật bổ sung cho `OCREngine._preprocess()`:
+Binarization (Otsu/Adaptive Thresholding), Denoising (Gaussian Blur
+riêng trước sharpen), Border Removal. Phân tích từng kỹ thuật:
+Binarization có rủi ro kỹ thuật rõ ràng (xung đột với cách Tesseract
+LSTM/OEM=3 tự xử lý ảnh xám nội bộ, nguy cơ xóa mất đuôi dấu phẩy -
+đúng vấn đề ADR-052/053 đang giải quyết) - khuyến nghị không thêm;
+Denoising/Border Removal khả thi về kỹ thuật nhưng chưa có bằng chứng
+thực nghiệm về nhiễu/viền đen trên dữ liệu thật hiện có. Người dùng
+quyết định huỷ toàn bộ đề xuất, nhưng ghi nhận "tăng cường hiệu quả
+OCR" là nội dung quan trọng cần làm ở v2.0.
+
+### 9. Tái cấu trúc thư mục project (trọng tâm chính của phiên)
+
+Người dùng xác định đây là việc quan trọng nhất để kết thúc v1, do kế
+hoạch v2.0 sẽ bổ sung/thay đổi nhiều model cho các module hiện có, cấu
+trúc `core/` phẳng (13 file) sẽ khó quản lý thêm. Quét toàn bộ import
+dependency thật giữa các file `core/*.py` + `ui/worker.py` +
+`utils/logger.py` + `tests/core/test_extractor.py` trước khi đề xuất,
+xác nhận 13 file chia thành 5 giai đoạn pipeline độc lập (đã có ADR
+riêng: Reading/Detection/Extraction/Parsing/Export) + 1 tầng domain
+dùng chung (`models.py`/`enums.py`/`constants.py`, là hub, không tách
+nhỏ thêm để tránh rủi ro import vòng).
+
+Đề xuất cấu trúc `core/domain/`, `core/reading/`, `core/detection/`,
+`core/extraction/`, `core/parsing/` + `core/parsing/template/`,
+`core/export/`. Nêu 4 điểm cần quyết định: (a) xử lý nhập nhằng tên
+"models" (models/ top-level vs core/models.py); (b) vị trí
+tests/core/test_extractor.py trong cấu trúc mới; (c) có tạo sẵn
+core/parsing/layoutlm/ placeholder không; (d) config.py có cần đổi
+không. Người dùng quyết định: (a) đổi models/ -> ui/models/; (b) tiếp
+tục mirror cấu trúc core/ mới; (c) không tạo sẵn; (d) không đổi.
+
+Làm rõ thêm 2 câu hỏi kỹ thuật của người dùng trước khi triển khai:
+"directory hay package" (xác nhận bắt buộc phải là package vì cú pháp
+`from core.domain.models import X` yêu cầu); "`__init__.py` rỗng có
+cần thiết" (xác nhận cần, đối chiếu tiền lệ `tests/__init__.py`/
+`tests/core/__init__.py` đã rỗng từ trước - chọn regular package thay
+vì namespace package để nhất quán toàn dự án).
+
+Soạn kế hoạch chi tiết 8 bước (7 bước di chuyển tuần tự theo nhóm
+module + 1 bước xác nhận cuối), liệt kê đầy đủ file di chuyển + import
+cần sửa ở từng file phụ thuộc cho từng bước, theo đúng Rule 2/3
+(DEVELOPMENT_WORKFLOW.md). Người dùng tự triển khai, xác nhận hoàn
+thành, verify độc lập từng bước, và chạy UI thật end-to-end đầy đủ ở
+bước cuối. Xem ADR-060.
+
+## Architecture Decisions
+
+Xem ARCHITECTURE_DECISIONS.md ADR-058 đến ADR-060, và amend ADR-048.
+Tóm tắt:
+
+- ADR-058: Hiển thị `relative_path` thay `file_name` ở UI Table/log/
+  report - tránh trùng tên khi Input Folder có thư mục con lồng nhau.
+- ADR-059: Giới hạn kiến trúc TemplateMatcher với multi-line value -
+  không patch được ở v1, củng cố lý do kế hoạch v2.0 LayoutLM.
+- ADR-060: Tái cấu trúc `core/` theo pipeline stage, `ui/models/` thay
+  `models/` top-level.
+- Amend ADR-048: đính chính số liệu chi phí PageImage/trang theo DPI
+  450 hiện tại (~56 MB, không phải ~24.9 MB của 300 DPI cũ).
+
+## Issues Encountered
+
+Không phát sinh lỗi kỹ thuật ngoài dự kiến trong phiên này - toàn bộ
+nội dung là thảo luận/rà soát/quyết định thiết kế, không có debug thực
+nghiệm nào cần giải quyết bất ngờ (khác các phiên OCR/Template trước).
+
+## Validation
+
+- Memory lifecycle: xác nhận qua đọc trực tiếp source (`with fitz.open`,
+  biến local trong `_process_pdf()`), không qua chạy thật đo RAM.
+- PDFResult trùng tên (ADR-058): người dùng tự áp dụng + verify chạy
+  thật kịch bản "Quý 3 -> Tháng 7/8/9" - xác nhận UI/log/report phân
+  biệt đúng.
+- excel_mapping.json thiếu cột: xác nhận qua đọc trực tiếp
+  `Mapper.load()`/`ExcelWriter._write_row()`/`_resolve_columns()`,
+  không chạy thật (logic đã rõ ràng từ source, không cần thực nghiệm
+  thêm).
+- Tái cấu trúc thư mục (ADR-060): người dùng tự triển khai theo 7 bước
+  đã soạn, verify độc lập từng bước (`pytest -v` + chạy thật), và xác
+  nhận 1 lượt UI thật end-to-end đầy đủ ở bước cuối cùng - PASS.
+
+## Next Session
+
+Theo đúng kế hoạch 3 Part:
+
+1. Đóng v1 Part 3/3 - xử lý vấn đề phát sinh khi quét trực tiếp mã
+   nguồn (chưa bắt đầu, cần quét lại toàn bộ source theo cấu trúc thư
+   mục MỚI vừa tái cấu trúc).
+2. Sau khi hoàn tất Part 3/3: giai đoạn làm tài liệu chuyển giao ứng
+   dụng (`resources/excel_mapping.json` khớp workbook thật, tài liệu
+   hướng dẫn cài đặt OCR cho end-user).
+3. v2.0 planning (chưa bắt đầu thiết kế chi tiết, chỉ ghi nhận định
+   hướng): LayoutLM Parser engine (ADR-059), tăng cường hiệu quả OCR
+   (Binarization/Denoising/Border Removal - cần bằng chứng thực nghiệm
+   trước khi quyết định), DPI thích ứng theo khổ giấy (ADR-053).
+
+## Notes
+
+Phiên này là phiên đầu tiên có tỷ trọng THẢO LUẬN/QUYẾT ĐỊNH KIẾN TRÚC
+cao hơn hẳn phần triển khai code trực tiếp bởi Assistant - phù hợp với
+mô hình làm việc mới được thiết lập từ đầu phiên (person đặt vấn đề dựa
+trên mã nguồn + nhật ký, Assistant phân tích/phản biện dựa trên 4
+nguyên tắc ưu tiên: Source of Truth mã nguồn > logic/tri thức > ý kiến
+cá nhân người dùng trong phiên > nhật ký làm phụ trợ). 2 lần người dùng
+bác bỏ đề xuất của Assistant với lý do kỹ thuật xác đáng (multi-line
+value: "chưa chắc có Key Token chặn phía sau", "BELOW không đủ linh
+động"; tiền xử lý ảnh: quyết định huỷ dựa trên đánh giá rủi ro đã trình
+bày) - xác nhận giá trị của việc yêu cầu xác nhận trước khi triển khai
+(theo đúng yêu cầu ban đầu của người dùng khi mở Project này).
+
+------------------------------------------------------------------------

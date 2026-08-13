@@ -29,7 +29,7 @@ thảo luận đã chốt trước khi viết file này.
 """
 
 from __future__ import annotations
-from core.extractor import Extractor
+from core.extraction.extractor import Extractor
 
 
 # Kích thước trang KHÔNG XOAY dùng chung cho mọi test case.

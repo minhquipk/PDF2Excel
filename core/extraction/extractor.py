@@ -3,7 +3,7 @@ extraction results, ready for Parser.
 """
 
 from __future__ import annotations
-from core.models import (
+from core.domain.models import (
     AnalysisMode,
     DocumentAnalysis,
     ExtractionResult,
@@ -11,7 +11,7 @@ from core.models import (
     PDFPage,
     WordToken,
 )
-from core.ocr_engine import OCREngine
+from core.extraction.ocr_engine import OCREngine
 
 
 class Extractor:

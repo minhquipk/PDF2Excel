@@ -78,53 +78,61 @@ Communication is only through Qt Signals.
 # 3. Current Project Structure
 
 ```
-PDF2Excel/
+config.py
+main.py
+requirements.txt
+requirements-dev.txt
 
-    config.py
-    main.py
-    requirements.txt
-    requirements-dev.txt
-
-    ui/
-        base_widget.py
-        widgets.py
-        main_window.py
-        theme.py
-        worker.py
-
+ui/
+    base_widget.py
+    widgets.py
+    main_window.py
+    theme.py
+    worker.py
     models/
         processing_table_model.py
 
-    utils/
-        logger.py
+utils/
+    logger.py
 
-    core/
-        constants.py
+core/
+    domain/
+        models.py
         enums.py
+        constants.py
+    reading/
+        pdf_reader.py
+    detection/
+        pdf_detector.py
+    extraction/
+        extractor.py
+        ocr_engine.py
+    parsing/
+        parser.py
+        template/
+            template_loader.py
+            template_matcher.py
+            value_converter.py
+    export/
         excel_mapper.py
         excel_writer.py
-        extractor.py
-        models.py
-        ocr_engine.py
-        parser.py
-        pdf_detector.py
-        pdf_reader.py
         report_writer.py
-        template_loader.py
-        template_matcher.py
-        value_converter.py
 
-    tests/
-        core/
+tests/
+    core/
+        extraction/
             test_extractor.py
 
-    resources/
-        excel_mapping.json
-        EXCEL_MAPPING_GUIDE.md
-        TEMPLATE_AUTHORING_GUIDE.md
-        templates/
-            sample_invoice_v1.json
+resources/
+    excel_mapping.json
+    EXCEL_MAPPING_GUIDE.md
+    TEMPLATE_AUTHORING_GUIDE.md
+    templates/
+        sample_invoice_v1.json
 ```
+*(Tái cấu trúc hoàn tất Session 2026-08-13, xem CHANGELOG.md và ADR-060.
+`models/` top-level cũ đã đổi thành `ui/models/`. `core/` chia theo
+pipeline stage thay vì phẳng.)*
 
 ---
 
@@ -206,6 +214,11 @@ biệt với requirements.txt). 9 test case cho
 Extractor._rotate_bbox() (4 rotation × verify hình học tay + 2
 round-trip identity check). tests/core/ được thống nhất làm chuẩn
 cấu trúc cho mọi test module sau này.
+- - **Tái cấu trúc thư mục `core/`** theo pipeline stage (domain/reading/
+  detection/extraction/parsing/parsing/template/export) và đổi
+  `models/` top-level thành `ui/models/` — hoàn tất Session 2026-08-13,
+  verify qua `pytest -v` + UI thật end-to-end. Xem ADR-060.
+
 
 Current UI features:
 
@@ -603,6 +616,18 @@ UI — that is the planned next step (see Section 15).
 
 Current:
 
+- **Giới hạn kiến trúc của TemplateMatcher với giá trị đa dòng (multi-line
+  value) và phụ thuộc `max_distance` tĩnh** — KHÔNG phải bug patch được
+  ở tầng heuristic v1; là giới hạn nền tảng của phương pháp hình học
+  tĩnh (chưa gặp thật trên dữ liệu test A4 hiện có, đánh giá rủi ro cho
+  layout A5/bảng biểu phụ). Đã cân nhắc và bác bỏ 2 hướng vá (window
+  động theo Key/Section kế tiếp; khóa `direction=BELOW`). Lời giải
+  triệt để thuộc kế hoạch v2.0 (LayoutLM). Xem ADR-059.
+- Rủi ro lý thuyết còn tồn đọng (chưa đủ dữ liệu đánh giá tần suất,
+  tổng hợp lại): gap-based merge tràn field (ADR-044); section header
+  va chạm lý thuyết (ADR-045); 2 trường hợp biên của ADR-052 (OCR mất
+  hẳn dấu phân cách - không còn dấu vết vị trí để suy luận; cụm cuối
+  đúng 3 chữ số trùng ngẫu nhiên với `decimal_separator` đã cấu hình).
 - Real OCR backend not implemented (`ocr_engine.py` is Mock only) —
   intentionally deferred, see Section 15.
 - Knowledge System (TDS Chapter 9: lifecycle, governance, sources)
@@ -704,10 +729,18 @@ Resolved (previously listed here, now implemented — see Section 4):
 Pipeline end-to-end đã hoàn thiện, verify qua chạy thật (UI thật, PDF
 Digital lẫn Scanned). Giai đoạn hiện tại: **đóng v1**, chia 3 phần:
 
-- **Part 1/3 — Xử lý Known Issues từ nhật ký: HOÀN TẤT** (xem
-  CHANGELOG.md, mục [ngày đóng Part 1] để biết đầy đủ danh sách đã xử
-  lý).
-- **Part 2/3 — Xử lý vấn đề do người dùng tự ghi nhận:** chưa bắt đầu.
+- **Part 1/3 — Xử lý Known Issues từ nhật ký: HOÀN TẤT** (Session
+  2026-08-12).
+- **Part 2/3 — Xử lý vấn đề do người dùng tự ghi nhận: HOÀN TẤT**
+  (Session 2026-08-13). Đã xử lý: memory management review (không phát
+  hiện leak, chỉ đính chính số liệu ADR-048); PDFResult trùng tên khi
+  Input Folder có thư mục con lồng nhau (ADR-058); đánh giá confidence
+  score tăng khi thêm rule (ghi nhận, không cần hành động); trao đổi
+  `excel_mapping.json` với số cột ít hơn `InvoiceInfo` (xác nhận hệ
+  thống hoạt động đúng, không cần sửa code); giới hạn kiến trúc
+  multi-line value (ADR-059); đề xuất tiền xử lý ảnh OCR nâng cao (đã
+  huỷ, ghi nhận "tăng cường hiệu quả OCR" là ưu tiên v2 — xem §18);
+  tái cấu trúc thư mục project (ADR-060).
 - **Part 3/3 — Xử lý vấn đề phát sinh khi quét trực tiếp mã nguồn:**
   chưa bắt đầu.
 
@@ -802,3 +835,14 @@ DO NOT change unless absolutely necessary.
   ADR-053) - lựa chọn khổ giấy ở UI.
 - Cho phép người dùng tuỳ chỉnh `NumberRepair.DECIMAL_TAIL_MAX_LENGTH`
   theo loại hóa đơn (v2.0, xem ADR-052).
+- **Tăng cường hiệu quả OCR (v2.0, ưu tiên quan trọng)** — ghi nhận từ
+  Session 2026-08-13: các đề xuất tiền xử lý ảnh nâng cao (Binarization/
+  Otsu/Adaptive Thresholding, Denoising/Gaussian Blur riêng biệt trước
+  sharpen, Border Removal) đã được thảo luận và huỷ bỏ triển khai ở v1
+  (rủi ro kỹ thuật: Binarization xung đột trực tiếp với cách Tesseract
+  LSTM/OEM=3 tự xử lý ảnh xám nội bộ, có nguy cơ làm trầm trọng thêm
+  vấn đề đuôi dấu phẩy mà ADR-052/053 đang cố giải quyết; Denoising/
+  Border Removal khả thi hơn nhưng chưa có bằng chứng thực nghiệm về
+  nhiễu/viền đen trên dữ liệu thật hiện có). Xếp vào phạm vi v2.0, cần
+  đánh giá lại có/không có bằng chứng thực nghiệm mới trước khi quyết
+  định triển khai.

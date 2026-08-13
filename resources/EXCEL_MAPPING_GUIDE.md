@@ -69,7 +69,6 @@ không thể ghi một phần.
 
 Không bắt buộc phải khai báo đủ mọi cột có trong Table — cột nào không
 khai báo trong `columns` sẽ không bị chương trình đụng tới.
-
 ---
 
 ## 4. Danh sách field hợp lệ của `InvoiceInfo`

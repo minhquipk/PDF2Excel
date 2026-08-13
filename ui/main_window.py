@@ -1,7 +1,7 @@
 from __future__ import annotations
 import time
-from core.constants import FileDialog, Table, UIText, Window
-from models.processing_table_model import ProcessingTableModel
+from core.domain.constants import FileDialog, Table, UIText, Window
+from ui.models.processing_table_model import ProcessingTableModel
 from ui.widgets import PathSelectorWidget, ProgressWidget, ProcessingTable
 from PySide6.QtCore import QThread, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices

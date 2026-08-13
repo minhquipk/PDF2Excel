@@ -2,8 +2,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import pymupdf as fitz
-from core.constants import Image
-from core.models import (
+from core.domain.constants import Image
+from core.domain.models import (
     PageImage,
     PDFDocument,
     PDFPage,
