@@ -37,6 +37,7 @@ class PDFTaskSignals(QObject):
     """
     completed = Signal(object)   # PDFResult
     failed = Signal(str, str)    # (pdf_path_str, error_message)
+    skipped = Signal()  # task bị huỷ trước khi kịp _process_pdf()
 
 
 class PDFTaskRunnable(QRunnable):
@@ -68,6 +69,7 @@ class PDFTaskRunnable(QRunnable):
 
     def run(self) -> None:
         if self._is_cancelled():
+            self.signals.skipped.emit()
             return
 
         try:
@@ -117,6 +119,7 @@ class Worker(QObject):
 
         self._thread_pool = QThreadPool()
         self._thread_count = 1  # ghi đè qua configure()
+        self._active_tasks: set[PDFTaskRunnable] = set()
 
         # State tổng hợp cho mô hình event-driven (không blocking waitForDone()
         # trong luồng Worker - xem quyết định kiến trúc Bước 3, mục 1).
@@ -142,6 +145,7 @@ class Worker(QObject):
 
         self._cancel_requested = False
         self._results.clear()
+        self._active_tasks.clear()
         self.started.emit()
         self.process()
 
@@ -231,35 +235,54 @@ class Worker(QObject):
 
         for pdf_file in pdf_files:
             task = PDFTaskRunnable(self, pdf_file, lambda: self._cancel_requested)
-            task.signals.completed.connect(self._on_task_completed)
-            task.signals.failed.connect(self._on_task_failed)
+            self._active_tasks.add(task)
+            task.signals.completed.connect(
+                lambda result, t=task: self._on_task_completed(result, t)
+            )
+            task.signals.failed.connect(
+                lambda pdf_path, message, t=task: self._on_task_failed(pdf_path, message, t)
+            )
+            task.signals.skipped.connect(
+                lambda t=task: self._on_task_skipped(t)
+            )
             self._thread_pool.start(task)
 
         # process() return ngay - KHÔNG blocking waitForDone(). Toàn bộ tổng
         # hợp kết quả/trigger finished diễn ra qua _on_task_completed()/
         # _on_task_failed() (quyết định kiến trúc Bước 3, mục 1).
 
-    @Slot(object)
-    def _on_task_completed(self, result: PDFResult) -> None:
-        """Slot chạy trên luồng Worker (Qt tự queue qua thread affinity)."""
-        if self._cancel_requested:
-            return
+    @Slot()
+    def _on_task_skipped(self, task: PDFTaskRunnable) -> None:
+        """
+        Task bị huỷ ngay trước khi gọi _process_pdf() (is_cancelled() == True
+        lúc run() bắt đầu) - không có PDFResult nào để ghi nhận, không tính
+        vào _processed_count/progress. Chỉ dọn _active_tasks và kiểm tra điều
+        kiện "mọi task đã xong" để phát cancelled đúng lúc - đối xứng
+        _on_task_completed()/_on_task_failed() nhưng không đi qua
+        _advance_progress() (không có ý nghĩa tăng processed_count cho 1 PDF
+        chưa từng được xử lý).
+        """
+        self._active_tasks.discard(task)
+        if self._cancel_requested and self._thread_pool.activeThreadCount() == 0:
+            self.cancelled.emit()
 
+    @Slot(object)
+    def _on_task_completed(self, result: PDFResult, task: PDFTaskRunnable) -> None:
+        """Slot chạy trên luồng Worker (Qt tự queue qua thread affinity)."""
+        self._active_tasks.discard(task)
         self._results.append(result)
         self.file_processed.emit(result)
         self._advance_progress()
 
     @Slot(str, str)
-    def _on_task_failed(self, pdf_path: str, message: str) -> None:
+    def _on_task_failed(self, pdf_path: str, message: str, task: PDFTaskRunnable) -> None:
         """
         Trường hợp hiếm: lỗi ngoài dự kiến thoát khỏi mọi try/except trong
         _process_pdf() (vốn đã tự bắt Exception ở từng stage - xem
         _process_pdf() hiện có). Giữ batch tiếp tục thay vì crash toàn bộ,
         đối xứng triết lý fail-soft per-item đã có (ADR-031/032/033).
         """
-        if self._cancel_requested:
-            return
-
+        self._active_tasks.discard(task)
         result = PDFResult(
             source_file=Path(pdf_path),
             relative_path=Path(pdf_path),
@@ -274,6 +297,11 @@ class Worker(QObject):
     def _advance_progress(self) -> None:
         self._processed_count += 1
 
+        if self._cancel_requested:
+            if self._thread_pool.activeThreadCount() == 0:
+                self.cancelled.emit()
+            return
+
         elapsed_seconds = time.time() - self._batch_start_time
         elapsed_str = self._format_time(elapsed_seconds)
 
@@ -287,11 +315,8 @@ class Worker(QObject):
         self.progress.emit(self._processed_count, self._total_files, elapsed_str, eta_str)
 
         if self._processed_count >= self._total_files:
-            if self._cancel_requested:
-                self.cancelled.emit()
-            else:
-                self._write_excel()
-                self.finished.emit()
+            self._write_excel()
+            self.finished.emit()
 
     def _process_pdf(self, pdf_file: Path) -> PDFResult:
         """Read, classify, extract, and parse one PDF without accessing the UI."""

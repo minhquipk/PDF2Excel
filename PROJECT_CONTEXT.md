@@ -11,8 +11,10 @@
 > implement (xem `DEVELOPMENT_WORKFLOW.md`).
 >
 > **Trạng thái tại thời điểm cập nhật gần nhất:** đã đóng xong v1 (đủ
-> cả 3 Part, Session 2026-08-12/13/14). Đang ở giai đoạn chuẩn bị tài
-> liệu chuyển giao ứng dụng và lên kế hoạch v2.0.
+> cả 3 Part, Session 2026-08-12/13/14) và hoàn tất lộ trình
+> Multi-Threading v2.0 (5/5 bước, Session 2026-08-15/16). Đang ở giai
+> đoạn chuẩn bị tài liệu chuyển giao ứng dụng và lên kế hoạch các hạng
+> mục v2.0 khác (LayoutLM Parser, DPI thích ứng khổ giấy...).
 
 ------------------------------------------------------------------------
 
@@ -504,10 +506,9 @@ input rỗng, Stop không hủy được PDF discovery) đều đã xử lý t�
   chạy (không chỉ check trước khi bắt đầu), hoặc cần logic chờ đồng bộ
   phức tạp hơn giữa các luồng. **Ghi nhận, chưa áp dụng** theo quyết
   định của người dùng (Session 2026-08-15). → ADR-067.
-- **Bước 4/5 của `MULTI_THREAD_SPECIFICATION.md` chưa triển khai** —
-  test kịch bản Stop giữa chừng với batch lớn (100 file); kiểm tra
-  tương thích đa nền tảng (5 nguyên tắc §5); đo hiệu năng v1 (tuần
-  tự) vs v2 (đa luồng).
+- **High-DPI Scaling (ADR-069) chưa verify bằng hình ảnh thật trên
+  Windows** ở scale 125%/150% — patch đã áp dụng (`main.py`), chỉ chờ
+  xác nhận trực quan từ người dùng.
 
 ## Kiến trúc / Cross-cutting
 

@@ -565,3 +565,42 @@ liệu cụ thể (số luồng/tốc độ) trong phiên này.
 Bước 4 (hoàn thiện cơ chế Stop — đã có `QThreadPool.clear()` cơ bản
 trong Bước 3, chưa test riêng kịch bản Stop giữa chừng với 100 file);
 Bước 5 (kiểm tra tương thích đa nền tảng + đo hiệu năng v1 vs v2).
+
+------------------------------------------------------------------------
+
+## 2026-08-16 — Đóng Lộ Trình Multi-Threading v2.0: Bước 4/5 & Bước 5/5
+
+### Fixed
+- `ui/worker.py`: sửa lỗi treo ứng dụng khi Stop giữa batch PDF lớn
+  (rõ nhất khi Stop rơi vào chuỗi tác vụ Digital dồn dập) — `Elapsed`
+  không dừng, toàn bộ UI khoá vĩnh viễn trừ Exit. Thêm signal `skipped`
+  (`PDFTaskSignals`), slot `_on_task_skipped()`, set `_active_tasks`
+  giữ tham chiếu Python tới `PDFTaskRunnable` đang active. → ADR-068.
+
+### Added
+- `main.py`: cấu hình `QGuiApplication.setHighDpiScaleFactorRoundingPolicy(PassThrough)`
+  trước khi khởi tạo `QApplication`, cho Windows scale 125%/150%.
+  → ADR-069.
+
+### Verified
+- Bước 4: chạy thật batch 600 PDF, Stop nhiều lần ở các thời điểm khác
+  nhau (đặc biệt giữa chuỗi Digital) — hết treo.
+- Bước 5: đối chiếu 5 nguyên tắc tương thích đa nền tảng
+  (`MULTI_THREAD_SPECIFICATION.md` §5) với source — 4/5 đã tuân thủ sẵn
+  (OpenMP, File Handle Windows, Path handling, UTF-8 encoding), 1/5
+  (High-DPI) đã patch, **chưa verify hình ảnh thật trên Windows**.
+- Đo hiệu năng `thread_count=1` vs `thread_count=2` trên batch 600 PDF
+  (digital + OCR trộn), 3 lần đo mỗi cấu hình: trung bình 18 phút 37
+  giây (1 luồng) → 11 phút 26 giây (2 luồng), speedup ≈ 1.63x. **Lưu ý
+  thuật ngữ:** đây là so sánh `thread_count=1` (vẫn qua `QThreadPool`)
+  với `thread_count=2`, KHÔNG phải so với code tuần tự v1 gốc (đã không
+  còn tồn tại trong source từ ADR-067).
+
+### Quyết định kiến trúc
+→ ADR-068, ADR-069.
+
+### Còn tồn đọng
+Verify trực quan High-DPI trên Windows thật ở scale 125%/150%
+(ADR-069) — chưa có xác nhận từ người dùng.
+
+Lộ trình `MULTI_THREAD_SPECIFICATION.md` (5 bước) — **HOÀN TẤT**.

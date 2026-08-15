@@ -83,6 +83,8 @@ quyết định cuối cùng và lý do kỹ thuật của nó.
 | ADR-065 | Sửa lỗi validate input rỗng (`Path()` truthiness bug) | Accepted |
 | ADR-066 | PDF Discovery chuyển sang `os.walk()` — cancellable + case-insensitive | Accepted |
 | ADR-067 | Worker v2.0: xử lý đa luồng qua QThreadPool, mô hình event-driven | Accepted |
+| ADR-068 | Sửa lỗi treo khi Stop batch lớn — đảm bảo mọi `PDFTaskRunnable.run()` luôn emit đúng 1 signal | Accepted |
+| ADR-069 | High-DPI Scaling Policy — `PassThrough` cho Windows scale lẻ (125%/150%) | Accepted |
 
 ------------------------------------------------------------------------
 
@@ -1855,3 +1857,111 @@ tránh người dùng chọn vượt mức an toàn), `ui/worker.py::PDFTaskSign
 `_on_task_failed()`/`_advance_progress()` (Bước 3).
 
 ------------------------------------------------------------------------
+
+## ADR-068 --- Sửa Lỗi Treo Khi Stop Batch Lớn — Đảm Bảo Mọi `PDFTaskRunnable.run()` Luôn Emit Đúng 1 Signal
+
+**Status:** Accepted
+
+Phát hiện qua thực nghiệm thật (Bước 4, `MULTI_THREAD_SPECIFICATION.md`):
+Stop trên batch PDF lớn khiến ứng dụng treo (mọi control ngoại trừ Exit),
+`Elapsed` vẫn tiếp tục chạy — quan sát ban đầu của người dùng: hiện tượng
+luôn xảy ra khi Stop rơi đúng vào 1 chuỗi tác vụ Digital.
+
+### Quá trình chẩn đoán (3 vòng, mỗi vòng đều verify bằng chạy thật)
+
+**Vòng 1 (đúng nhưng chưa đủ):** `_on_task_completed()`/`_on_task_failed()`
+chặn sớm bằng `if self._cancel_requested: return` — khiến `_advance_progress()`
+không bao giờ chạy sau Stop, trong khi điều kiện phát `cancelled` (dựa
+trên `_processed_count >= _total_files`) chỉ được kiểm tra bên trong
+`_advance_progress()`. Vì các task bị `QThreadPool.clear()` loại khỏi
+hàng đợi sẽ không bao giờ gọi lại slot, điều kiện này không bao giờ đúng.
+Sửa: gộp logic quyết định "khi nào phát `cancelled`" vào `_advance_progress()`,
+dùng `QThreadPool.activeThreadCount() == 0` thay vì đếm theo `_total_files`.
+Áp dụng thật vẫn còn treo ở một số tình huống — xác nhận chưa phải nguyên
+nhân duy nhất.
+
+**Vòng 2 (không phải nguyên nhân gốc, giữ lại làm phòng vệ):** giả thuyết
+`PDFTaskSignals` (QObject không `parent`) bị GC trước khi event
+`completed`/`failed` đã xếp hàng cross-thread kịp được Worker-thread
+event loop xử lý (do `QRunnable.autoDelete()` xoá đối tượng C++ ngay sau
+`run()` return). Fix: `Worker._active_tasks: set[PDFTaskRunnable]` giữ
+tham chiếu Python tường minh tới từng `task` tới khi chính callback của
+nó `discard()` nó ra. Áp dụng thật vẫn còn treo — xác nhận đây KHÔNG phải
+nguyên nhân gốc rễ của bug đang gặp, dù vẫn là 1 rủi ro lifetime có thật
+về mặt lý thuyết theo ngữ nghĩa PySide/Qt (queued cross-thread signal +
+QObject không còn tham chiếu) — quyết định giữ nguyên patch này làm lớp
+phòng vệ bổ sung, không gỡ bỏ.
+
+**Vòng 3 (xác nhận đúng nguyên nhân gốc, tất định — không phải race):**
+`PDFTaskRunnable.run()` có nhánh `if self._is_cancelled(): return` KHÔNG
+emit bất kỳ signal nào. `QThreadPool.clear()` chỉ loại được task CHƯA
+được dequeue khỏi hàng đợi — task đã dequeue (đang chờ CPU chạy `run()`)
+đúng lúc Stop được bấm vẫn tiếp tục chạy, kiểm tra cờ hủy, return im
+lặng. Nếu đây là task active cuối cùng, không còn lần gọi nào tới
+`_advance_progress()`/bất kỳ slot nào để kiểm tra `activeThreadCount() == 0`
+→ `cancelled` không bao giờ emit → treo vĩnh viễn.
+
+Batch Digital hoàn tất cực nhanh (không qua Tesseract) khiến
+`QThreadPool` liên tục dequeue dồn dập — xác suất "có task đang ở trạng
+thái lưng chừng (đã dequeue, chưa chạy) đúng lúc Stop" cao hơn hẳn batch
+OCR (chậm, rải rác theo thời gian) — giải thích đúng quan sát ban đầu
+của người dùng.
+
+### Giải pháp
+
+Thêm signal `skipped` mới vào `PDFTaskSignals`. `PDFTaskRunnable.run()`
+emit `skipped` trước khi return ở nhánh huỷ sớm. `Worker._on_task_skipped()`
+(slot mới) đối xứng `_on_task_completed()`/`_on_task_failed()` nhưng
+KHÔNG tăng `_processed_count` (PDF chưa từng được xử lý thật) — chỉ
+`discard()` task khỏi `_active_tasks` và kiểm tra điều kiện phát `cancelled`.
+
+**Bất biến (invariant) đạt được:** mọi lần `PDFTaskRunnable.run()` được
+gọi, bất kể đi qua nhánh nào (thành công / lỗi / huỷ sớm), đều emit đúng
+1 signal trước khi return — đảm bảo Worker luôn có cơ hội quan sát
+`activeThreadCount() == 0` sau khi task active cuối cùng kết thúc.
+
+**Đối chiếu với `MULTI_THREAD_SPECIFICATION.md` §4 bước 3:** đặc tả gốc
+("task tự kết thúc nhanh, không gửi kết quả vào bộ nhớ") đã đúng ở việc
+task bị huỷ sớm không tạo `PDFResult`, nhưng không lường trước rằng cơ
+chế tracking tiến độ của `Worker` phụ thuộc vào việc MỌI task đều phát
+tín hiệu gì đó — khoảng trống này nay đã đóng qua `skipped`.
+
+Xác nhận trong implementation: `ui/worker.py::PDFTaskSignals.skipped`,
+`PDFTaskRunnable.run()`, `Worker._on_task_skipped()`,
+`Worker._advance_progress()`, `Worker.process()`,
+`Worker.__init__._active_tasks`.
+
+Verify: chạy thật batch 600 PDF (digital + OCR trộn), Stop nhiều lần ở
+các thời điểm khác nhau, đặc biệt giữa chuỗi Digital dồn dập — không còn
+treo, `Elapsed` dừng đúng lúc, UI mở khoá lại bình thường.
+
+------------------------------------------------------------------------
+
+## ADR-069 --- High-DPI Scaling Policy: `PassThrough` Cho Windows Scale Lẻ
+
+**Status:** Accepted
+
+`MULTI_THREAD_SPECIFICATION.md` §5 nguyên tắc 5 yêu cầu cấu hình PySide6
+hỗ trợ scale 125%/150% chuẩn xác trên Windows. Rà soát `main.py` xác
+nhận KHÔNG có bất kỳ cấu hình High-DPI nào — chỉ dựa vào hành vi mặc
+định của Qt6 (tự bật High-DPI scaling, nhưng làm tròn hệ số scale phân
+số về số nguyên gần nhất theo mặc định).
+
+**Giải pháp:** gọi
+`QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)`
+**trước** khi khởi tạo `QApplication` (bắt buộc về thứ tự — policy chỉ
+có hiệu lực nếu set trước instance `QApplication`/`QGuiApplication` đầu
+tiên, theo tài liệu chính thức Qt).
+
+**Lý do chọn `PassThrough` thay vì mặc định `Round`:** giữ đúng hệ số
+scale phân số thật của hệ điều hành (VD 1.25, 1.5) thay vì Qt tự làm
+tròn về số nguyên gần nhất — tránh layout/icon bị lệch đúng ở 2 mức
+scale mà đặc tả nêu (125%/150% đều là hệ số lẻ, không nguyên).
+
+**Rủi ro còn lại:** thay đổi này chỉ verify được bằng quan sát hình ảnh
+thật trên Windows ở đúng scale 125%/150% — chưa có xác nhận trực quan
+tại thời điểm ADR này được ghi (giới hạn môi trường phát triển). Cần
+người dùng tự kiểm tra và xác nhận (đặc biệt `QTableView` — Processing
+Table) trước khi coi nguyên tắc 5 là hoàn toàn đóng.
+
+Xác nhận trong implementation: `main.py`.

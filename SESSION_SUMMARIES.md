@@ -1209,3 +1209,120 @@ dùng đầu phiên. Quy trình đóng băng thiết kế trước khi code (Rul
 được áp dụng nghiêm ngặt ở Bước 3 — trình bày đủ 5 quyết định kiến
 trúc + 1 xung đột phát hiện độc lập trước khi viết bất kỳ dòng code
 nào, theo đúng mô hình đã thiết lập từ v1.
+
+------------------------------------------------------------------------
+
+# Session 2026-08-16 — Multi-Threading Bước 4/5: Sửa Lỗi Treo Khi Stop & Bước 5/5: Tương Thích + Benchmark
+
+## Mục tiêu
+
+Hoàn tất Bước 4 (Cơ chế Dừng/Hủy) và Bước 5 (Tương thích đa nền tảng +
+đo hiệu năng) của `MULTI_THREAD_SPECIFICATION.md`, đóng lộ trình 5 bước
+Multi-Threading v2.0 bắt đầu từ Session 2026-08-15.
+
+## Hoàn thành
+
+Sửa xong lỗi treo khi Stop (3 vòng chẩn đoán). Đối chiếu 5 nguyên tắc
+tương thích đa nền tảng. Patch High-DPI. Đo hiệu năng `thread_count=1`
+vs `2` trên 600 PDF thật.
+
+## Quyết định kiến trúc
+
+→ ADR-068, ADR-069.
+
+## Bối cảnh: 3 vòng chẩn đoán lỗi treo khi Stop
+
+Người dùng báo lỗi qua thực nghiệm thật: Stop trên batch lớn khiến ứng
+dụng treo (trừ Exit), `Elapsed` vẫn chạy tiếp — ban đầu chưa rõ quy
+luật, sau đó người dùng tự quan sát và cung cấp manh mối quyết định:
+"luôn bấm Stop ở một chuỗi tác vụ digital".
+
+**Vòng 1 — đúng nhưng chưa đủ:** `_on_task_completed()`/`_on_task_failed()`
+chặn sớm theo `_cancel_requested`, khiến `_advance_progress()` không
+bao giờ chạy sau Stop. Sửa: dời điều kiện phát `cancelled` vào
+`_advance_progress()`, dùng `activeThreadCount()==0` thay đếm theo
+`_total_files`. Áp dụng thật vẫn còn treo ở một số tình huống.
+
+**Vòng 2 — không phải nguyên nhân gốc, giữ lại làm phòng vệ:** giả
+thuyết race GC trên `PDFTaskSignals` (QRunnable `autoDelete` xoá đối
+tượng trước khi queued cross-thread signal được xử lý) — khớp bề mặt
+với quan sát "hay xảy ra ở chuỗi Digital dồn dập" (tần suất huỷ đối
+tượng cao). Fix: `Worker._active_tasks: set` giữ tham chiếu Python.
+Áp dụng thật vẫn còn treo → xác nhận KHÔNG phải nguyên nhân gốc (dù vẫn
+là rủi ro lifetime có thật về lý thuyết, quyết định giữ patch làm lớp
+phòng vệ bổ sung).
+
+**Vòng 3 — xác nhận đúng nguyên nhân gốc, tất định:** `PDFTaskRunnable.run()`
+có nhánh huỷ sớm KHÔNG emit signal nào. `QThreadPool.clear()` chỉ loại
+task CHƯA dequeue — task đã dequeue nhưng chưa chạy đúng lúc Stop vẫn
+tiếp tục `run()`, return im lặng khi thấy cờ huỷ. Nếu là task active
+cuối cùng → không còn lần gọi nào kiểm tra `activeThreadCount()==0` →
+treo vĩnh viễn. Batch Digital (nhanh, dequeue dồn dập) làm tăng xác
+suất trúng đúng thời điểm này — giải thích chính xác quan sát ban đầu
+của người dùng. Sửa: signal `skipped` mới, `Worker._on_task_skipped()`
+đối xứng 2 slot còn lại nhưng không tăng `_processed_count`. Áp dụng
+thật xác nhận hết treo.
+
+**Bài học:** manh mối "luôn Stop đúng vào chuỗi Digital" do người dùng
+tự quan sát và mô tả (không phải Assistant tự phát hiện) là đầu mối
+quyết định giúp thu hẹp đúng hướng ở Vòng 3.
+
+## Bối cảnh: Bước 5 — Tương thích đa nền tảng & Benchmark
+
+### Đối chiếu 5 nguyên tắc §5
+
+4/5 nguyên tắc (OpenMP, File Handle Windows, Path handling, UTF-8
+encoding) xác nhận đã tuân thủ qua source hiện có. Nguyên tắc còn lại
+(High-DPI 125%/150%) phát hiện `main.py` chưa có cấu hình gì — patch
+`setHighDpiScaleFactorRoundingPolicy(PassThrough)`. → ADR-069. Chưa
+verify bằng hình ảnh thật trên Windows scale lẻ (giới hạn môi trường
+Assistant) — cần người dùng tự xác nhận.
+
+### Benchmark: proxy v1 vs khôi phục code cũ
+
+Vì code tuần tự v1 gốc không còn tồn tại (đã viết lại hoàn toàn theo
+`QThreadPool` từ ADR-067), 2 hướng được đề xuất: (a) dùng
+`thread_count=1` làm proxy, (b) khôi phục tạm code tuần tự cũ để so
+sánh công bằng tuyệt đối. Người dùng chọn (a).
+
+**Kết quả đo** (600 PDF digital+OCR trộn, 3 lần mỗi cấu hình):
+- `thread_count=1`: trung bình 18 phút 37 giây (1117s).
+- `thread_count=2`: trung bình 11 phút 26 giây (686s).
+- Speedup ≈ 1.63× — không đạt gần 2× lý tưởng: `_write_excel()` cuối
+  batch vẫn tuần tự (ADR-008), `_discover_pdf_files()` chạy tuần tự
+  trước dispatch, phần code Python thuần (đọc PDF/Parse/Regex) vẫn bị
+  giới hạn bởi GIL.
+
+**Lưu ý thuật ngữ** (áp dụng bài học ADR-056): kết quả ghi đúng là
+"`thread_count=1` vs `thread_count=2`", KHÔNG ghi tắt "v1 vs v2" trong
+bất kỳ tài liệu nào.
+
+## Vướng mắc gặp phải
+
+Không có vướng mắc ngoài dự kiến ở Bước 5. Bước 4 là chuỗi 3 vòng chẩn
+đoán liên tiếp, mỗi vòng dựa trên bằng chứng thực nghiệm thật — 2 vòng
+đầu đúng về kỹ thuật (đáng giữ lại) nhưng không đủ để khép kín bug, chỉ
+vòng 3 chạm đúng nguyên nhân tất định.
+
+## Validation
+
+Bước 4: người dùng áp dụng tuần tự cả 3 patch, chạy thật batch 600 PDF
+nhiều lần Stop ở các thời điểm khác nhau — hết treo sau vòng 3. Bước 5:
+đối chiếu tĩnh 4/5 nguyên tắc qua source, High-DPI patch chưa verify
+hình ảnh thật. Benchmark: 3 lần đo mỗi cấu hình, dao động <1% mỗi phía.
+
+## Phiên tiếp theo
+
+Lộ trình `MULTI_THREAD_SPECIFICATION.md` 5 bước — HOÀN TẤT. Việc còn
+mở: verify High-DPI trên Windows thật ở scale 125%/150% (ADR-069). Cân
+nhắc quay lại Known Issue tồn đọng của v1 (OCR nhầm dấu <0.5%,
+`excel_mapping.json` mẫu, tài liệu cài đặt OCR end-user) hoặc bắt đầu
+planning các hạng mục v2.0 khác (LayoutLM Parser, DPI thích ứng khổ
+giấy).
+
+## Ghi chú
+
+Phiên này minh chứng rõ giá trị của "chạy thật để verify" sau MỖI patch
+(Rule 12) thay vì gộp nhiều thay đổi rồi mới test — nếu gộp cả 3 fix
+của Bước 4 vào 1 lần test duy nhất, sẽ khó xác định chính xác vòng nào
+thật sự giải quyết bug.
