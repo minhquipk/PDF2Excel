@@ -2,7 +2,7 @@ from __future__ import annotations
 import time
 from core.domain.constants import FileDialog, Table, UIText, Window
 from ui.models.processing_table_model import ProcessingTableModel
-from ui.widgets import PathSelectorWidget, ProgressWidget, ProcessingTable
+from ui.widgets import PathSelectorWidget, ProgressWidget, ProcessingTable, ThreadSelectorWidget
 from PySide6.QtCore import QThread, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from ui.worker import Worker
@@ -56,6 +56,7 @@ class MainWindow(QMainWindow):
     def _create_widgets(self) -> None:
         self.input_widget = PathSelectorWidget(UIText.INPUT_FOLDER)
         self.output_widget = PathSelectorWidget(UIText.OUTPUT_EXCEL)
+        self.thread_widget = ThreadSelectorWidget()
 
         self.btn_start = QPushButton(UIText.BUTTON_START)
         self.btn_stop = QPushButton(UIText.BUTTON_STOP)
@@ -77,6 +78,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.input_widget)
         layout.addWidget(self.output_widget)
+        layout.addWidget(self.thread_widget)
 
         start_layout = QHBoxLayout()
         start_layout.addStretch()
@@ -118,6 +120,7 @@ class MainWindow(QMainWindow):
     def _set_running(self, running: bool) -> None:
         self.input_widget.setEnabled(not running)
         self.output_widget.setEnabled(not running)
+        self.thread_widget.setEnabled(not running)
 
         self.btn_start.setEnabled(not running)
         self.btn_stop.setEnabled(running)
@@ -168,6 +171,7 @@ class MainWindow(QMainWindow):
         self._worker.configure(
             self.input_widget.path(),
             self.output_widget.path(),
+            self.thread_widget.thread_count(),
         )
         self._start_time = time.time()
         self._elapsed_timer.start()

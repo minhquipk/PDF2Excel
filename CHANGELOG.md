@@ -413,7 +413,7 @@ artifact) — xem SESSION_SUMMARIES.md, Session 2026-08-09/11.
 ### Added
 - `resources/TEMPLATE_AUTHORING_GUIDE.md`.
 - `tests/core/test_extractor.py` — unit test đầu tiên của dự án (9
-  case cho `_rotate_bbox()`), `requirements-dev.txt`.
+  case cho `_rotate_bbox()`), `requirements-dev.txt` (`pytest==8.3.4`).
 - `pdf_detector.py`: 2 rule mới — `_evaluate_document_rule()`,
   `_evaluate_graphics_rule()` — đủ 7/7 Rule Category theo TDS §7.2. Xem
   ADR-057.
@@ -523,6 +523,45 @@ xem SESSION_SUMMARIES.md, Session 2026-08-14.
 
 ------------------------------------------------------------------------
 
-**Đóng v1 hoàn tất cả 3 Part** (Session 2026-08-12/13/14). Việc còn
-tồn đọng và kế hoạch v2.0: xem `PROJECT_CONTEXT.md` §14 (Known Issues)
-và §15 (Next Tasks).
+## 2026-08-15 — Mở v2.0: Multi-Threading (Bước 1-3/5)
+
+### Added
+- `core/system/hardware.py` (module mới): `get_cpu_info()` — pure
+  function, tính `(total_cores, recommended_threads)` theo công thức
+  MULTI_THREAD_SPECIFICATION.md §2.2.
+- `tests/core/system/test_hardware.py` — 9 test case (parametrize),
+  phủ ngưỡng 1/2/3/4/5/8/16/32/64/256 core + case `None`.
+- `ui/widgets.py`: `ThreadSelectorWidget` (mới) — `QComboBox` chọn số
+  luồng, giới hạn `[1, recommended_threads]`.
+- `ui/worker.py`: `PDFTaskSignals` (QObject con, `completed`/`failed`),
+  `PDFTaskRunnable` (QRunnable, đóng gói `_process_pdf()` cho 1 file).
+
+### Changed
+- `core/domain/constants.py::UIText`: thêm `THREAD_COUNT`.
+- `ui/main_window.py`: tích hợp `ThreadSelectorWidget` vào layout +
+  `_set_running()`; `_start()` truyền `thread_count()` vào
+  `Worker.configure()`.
+- `ui/worker.py::Worker`: `configure()` thêm tham số `thread_count`;
+  `__init__` khởi tạo `QThreadPool` + set `OMP_THREAD_LIMIT`/
+  `OMP_NUM_THREADS`; `cancel()` thêm `QThreadPool.clear()`;
+  `process()` viết lại hoàn toàn — non-blocking dispatch (không còn
+  vòng lặp tuần tự cũ); thêm `_on_task_completed()`,
+  `_on_task_failed()`, `_advance_progress()`.
+
+### Quyết định kiến trúc
+→ ADR-067. Bối cảnh thảo luận (đổi QSpinBox→QComboBox, xung đột
+ADR-008 vs đặc tả, bool vs threading.Event): xem SESSION_SUMMARIES.md,
+Session 2026-08-15.
+
+### Testing
+Bước 1: `pytest -v tests/core/system/test_hardware.py` — PASS toàn bộ
+(người dùng tự verify). Bước 2: chạy UI thật, verify ComboBox giới hạn
+đúng, enable/disable đúng theo `_set_running()` (người dùng tự verify,
+qua 2 vòng — vòng 1 QSpinBox, vòng 2 điều chỉnh QComboBox). Bước 3:
+chạy thực nghiệm thật (người dùng tự verify) — chưa có báo cáo bằng số
+liệu cụ thể (số luồng/tốc độ) trong phiên này.
+
+### Còn lại theo lộ trình MULTI_THREAD_SPECIFICATION.md
+Bước 4 (hoàn thiện cơ chế Stop — đã có `QThreadPool.clear()` cơ bản
+trong Bước 3, chưa test riêng kịch bản Stop giữa chừng với 100 file);
+Bước 5 (kiểm tra tương thích đa nền tảng + đo hiệu năng v1 vs v2).

@@ -82,6 +82,7 @@ quyết định cuối cùng và lý do kỹ thuật của nó.
 | ADR-064 | `Worker.report_path` fallback về `report.txt` trên đĩa | Accepted (amends ADR-041) |
 | ADR-065 | Sửa lỗi validate input rỗng (`Path()` truthiness bug) | Accepted |
 | ADR-066 | PDF Discovery chuyển sang `os.walk()` — cancellable + case-insensitive | Accepted |
+| ADR-067 | Worker v2.0: xử lý đa luồng qua QThreadPool, mô hình event-driven | Accepted |
 
 ------------------------------------------------------------------------
 
@@ -1790,5 +1791,67 @@ thường vốn không phân biệt.
 
 Xác nhận trong implementation: `ui/worker.py::Worker._discover_pdf_files()`,
 `Worker.process()`.
+
+------------------------------------------------------------------------
+
+## ADR-067 --- Worker v2.0: Xử Lý Đa Luồng Qua `QThreadPool`, Mô Hình Event-Driven
+
+**Status:** Accepted
+
+Bắt đầu v2.0 (từ Session 2026-08-15), `Worker.process()` chuyển từ vòng
+lặp tuần tự (v1) sang dispatch `PDFTaskRunnable` (mới) vào
+`QThreadPool`, theo `MULTI_THREAD_SPECIFICATION.md`. 5 quyết định kiến
+trúc đã chốt trước khi implement (Rule 11):
+
+1. **Non-blocking, event-driven** — `process()` dispatch toàn bộ task
+   rồi return ngay, KHÔNG gọi `QThreadPool.waitForDone()` (blocking).
+   Lý do: `Worker` là `QObject` trên `QThread` riêng, không có event
+   loop phụ; blocking sẽ chặn dispatch Signal `completed`/`failed` từ
+   Pool thread tới UI cho đến khi mọi task xong — Progress/Table sẽ
+   không còn cập nhật real-time. Tổng hợp kết quả + trigger
+   `_write_excel()`/`finished` chuyển hoàn toàn sang slot
+   `_on_task_completed()`/`_on_task_failed()`, đếm `_processed_count`
+   so với `_total_files`.
+2. **ETA đơn giản hóa theo thông lượng thực tế** —
+   `eta = (elapsed / processed) * remaining`, thay công thức
+   exponential moving average riêng digital/OCR của v1 (vốn thiết kế
+   cho tuần tự, không còn phản ánh đúng khi có concurrency).
+3. **Cancellation ở mức task, không phải checkpoint giữa hàm** —
+   `PDFTaskRunnable.run()` chỉ kiểm tra cờ hủy đúng 1 lần TRƯỚC khi
+   gọi `_process_pdf()`. Task đã bắt đầu chạy tới khi xong tự nhiên;
+   `QThreadPool.clear()` (gọi từ `Worker.cancel()`) loại task CHƯA
+   chạy khỏi hàng đợi. Quyết định có chủ đích (Rule 9): không patch
+   `_process_pdf()` để giữ nguyên khối business logic liền mạch
+   (ADR-005).
+4. **Thứ tự kết quả trên UI không còn xác định** — hệ quả tự nhiên,
+   chấp nhận được, của xử lý song song (khác v1: luôn theo đúng thứ tự
+   discovery).
+5. **`OMP_THREAD_LIMIT`/`OMP_NUM_THREADS` set 1 lần, cấp process** —
+   trong `Worker.__init__()`, trước khi bất kỳ `PDFTaskRunnable` nào
+   gọi Tesseract (`MULTI_THREAD_SPECIFICATION.md` §5.1 — tránh N luồng
+   Python × M luồng OpenMP con gây quá tải CPU).
+
+**Xung đột với `MULTI_THREAD_SPECIFICATION.md` §4 bước 5 — đã giải
+quyết theo Phương án A:** đặc tả gốc yêu cầu ghi Excel cho phần đã xử
+lý được khi Stop giữa chừng — mâu thuẫn trực tiếp với ADR-008 (frozen
+rule, `PROJECT_CONTEXT.md` §17: "Excel chỉ được ghi đúng 1 lần", "chỉ
+sau khi MỌI PDF đã xử lý xong"). Quyết định: **giữ nguyên ADR-008**,
+Stop → không ghi Excel, chỉ `cancelled.emit()`. §4 bước 5 của đặc tả
+multi-thread bị coi là mô tả chưa cập nhật theo ADR-008, không áp dụng.
+
+**Cancellation flag qua ranh giới luồng** — `PDFTaskRunnable` đọc
+`Worker._cancel_requested` (kiểu `bool`) từ Pool thread qua closure,
+không qua cơ chế đồng bộ hóa tường minh nào. An toàn trong CPython nhờ
+GIL (không có torn read/write) và cách dùng hiện tại (đọc 1 lần, không
+vòng lặp chờ) — nhưng đây là điểm duy nhất trong thiết kế dựa vào đảm
+bảo ngầm của GIL thay vì API `threading` tường minh. **Ghi nhận, chưa
+áp dụng** — xem Known Issue tương ứng ở `PROJECT_CONTEXT.md` §14.
+
+Xác nhận trong implementation: `core/system/hardware.py` (Bước 1),
+`ui/widgets.py::ThreadSelectorWidget` (Bước 2, dùng `QComboBox` giới
+hạn `[1, recommended_threads]` — không mở rộng tới `total_cores` thật,
+tránh người dùng chọn vượt mức an toàn), `ui/worker.py::PDFTaskSignals`,
+`PDFTaskRunnable`, `Worker.process()`/`_on_task_completed()`/
+`_on_task_failed()`/`_advance_progress()` (Bước 3).
 
 ------------------------------------------------------------------------

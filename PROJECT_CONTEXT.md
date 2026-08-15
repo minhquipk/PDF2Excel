@@ -188,9 +188,12 @@ chia theo giai đoạn pipeline thay vì phẳng như trước.
 - **`resources/TEMPLATE_AUTHORING_GUIDE.md`** — hướng dẫn viết
   Template Definition JSON, đúc kết toàn bộ quy tắc/ràng buộc phát
   sinh qua thực nghiệm nhiều phiên.
-- **Test tự động (2 module, `tests/core/`):**
+- **Test tự động (3 module, `tests/core/`):**
   `test_extractor.py` (9 case cho `_rotate_bbox()`),
-  `test_value_converter.py` (9 nhóm test cho `ValueConverter`).
+  `test_value_converter.py` (9 nhóm test cho `ValueConverter`),
+  `test_hardware.py` (9 test case cho `get_cpu_info()`).
+- **`core/system/hardware.py`** — `get_cpu_info()`, pure function, đã
+  có unit test (`tests/core/system/test_hardware.py`).
 
 ## Tính năng UI hiện tại
 
@@ -489,6 +492,22 @@ Không có Known Issue nào đang mở ở nhóm này tính đến cuối v1 —
 UI đã phát hiện (Report chỉ mở được sau khi Start, Start không validate
 input rỗng, Stop không hủy được PDF discovery) đều đã xử lý tại Session
 2026-08-14 (ADR-064/065/066).
+
+## Multi-Threading (v2.0, `Worker`/`PDFTaskRunnable`)
+
+- **Cancellation flag (`Worker._cancel_requested`) đọc qua ranh giới
+  luồng bằng kiểu `bool` thô, không qua `threading.Event`** — an toàn
+  trong CPython nhờ GIL với cách dùng hiện tại (đọc 1 lần trước khi
+  task bắt đầu, không polling/vòng lặp chờ), nhưng phụ thuộc đảm bảo
+  ngầm của GIL thay vì API đồng bộ hóa tường minh. Cân nhắc đổi sang
+  `threading.Event` nếu sau này cần task tự ngắt GIỮA CHỪNG khi đang
+  chạy (không chỉ check trước khi bắt đầu), hoặc cần logic chờ đồng bộ
+  phức tạp hơn giữa các luồng. **Ghi nhận, chưa áp dụng** theo quyết
+  định của người dùng (Session 2026-08-15). → ADR-067.
+- **Bước 4/5 của `MULTI_THREAD_SPECIFICATION.md` chưa triển khai** —
+  test kịch bản Stop giữa chừng với batch lớn (100 file); kiểm tra
+  tương thích đa nền tảng (5 nguyên tắc §5); đo hiệu năng v1 (tuần
+  tự) vs v2 (đa luồng).
 
 ## Kiến trúc / Cross-cutting
 

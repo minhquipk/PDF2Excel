@@ -2,7 +2,7 @@ import os
 import time
 from pathlib import Path
 from typing import Optional
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 from config import EXCEL_MAPPING_PATH, REPORTS_DIR, TEMPLATES_DIR
 from core.domain.enums import PDFType, ProcessStatus
 from core.export.excel_mapper import Mapper, MappingError
@@ -27,6 +27,58 @@ from core.parsing.parser import Parser
 from core.parsing.template.template_loader import TemplateLoader
 from core.parsing.template.template_matcher import TemplateMatcher
 from core.export.report_writer import ReportWriter
+
+
+class PDFTaskSignals(QObject):
+    """
+    Signal riêng cho 1 PDFTaskRunnable. QRunnable không phải QObject nên
+    không tự phát Signal được - tách class con này theo đúng khuyến nghị
+    chính thức của Qt cho QRunnable cần giao tiếp bất đồng bộ.
+    """
+    completed = Signal(object)   # PDFResult
+    failed = Signal(str, str)    # (pdf_path_str, error_message)
+
+
+class PDFTaskRunnable(QRunnable):
+    """
+    Đóng gói _process_pdf() cho đúng 1 file PDF, chạy trên 1 luồng của
+    QThreadPool. Không truy cập UI (đối xứng ADR-001) - chỉ gọi
+    Worker._process_pdf() (business logic không đổi, ADR-005) rồi phát
+    Signal kết quả.
+
+    Cancellation (MULTI_THREAD_SPECIFICATION.md §4, đã đơn giản hóa có
+    chủ đích - Rule 9): chỉ kiểm tra cờ hủy đúng 1 lần TRƯỚC khi gọi
+    _process_pdf(). Task đã bắt đầu chạy sẽ chạy tới khi xong tự nhiên -
+    không chèn checkpoint giữa _process_pdf() (giữ nguyên khối business
+    logic liền mạch, không vi phạm ADR-005). QThreadPool.clear() (gọi từ
+    Worker.cancel()) loại các task CHƯA kịp chạy khỏi hàng đợi.
+    """
+
+    def __init__(
+        self,
+        worker: "Worker",
+        pdf_file: Path,
+        is_cancelled: "callable",
+    ) -> None:
+        super().__init__()
+        self._worker = worker
+        self._pdf_file = pdf_file
+        self._is_cancelled = is_cancelled
+        self.signals = PDFTaskSignals()
+
+    def run(self) -> None:
+        if self._is_cancelled():
+            return
+
+        try:
+            result = self._worker._process_pdf(self._pdf_file)
+        except Exception as error:
+            self.signals.failed.emit(
+                str(self._pdf_file), f"{type(error).__name__}: {error}"
+            )
+            return
+
+        self.signals.completed.emit(result)
 
 
 class Worker(QObject):
@@ -57,9 +109,27 @@ class Worker(QObject):
         self._report_writer = ReportWriter(REPORTS_DIR)
         self._report_path: Optional[Path] = None
 
-    def configure(self, input_folder: Path, output_excel: Path) -> None:
+        # Khống chế OpenMP của Tesseract (MULTI_THREAD_SPECIFICATION.md §5.1)
+        # - set 1 lần, cấp process, trước khi bất kỳ PDFTaskRunnable nào gọi
+        # Tesseract. Tránh N luồng Python x M luồng con OpenMP -> CPU quá tải.
+        os.environ["OMP_THREAD_LIMIT"] = "1"
+        os.environ["OMP_NUM_THREADS"] = "1"
+
+        self._thread_pool = QThreadPool()
+        self._thread_count = 1  # ghi đè qua configure()
+
+        # State tổng hợp cho mô hình event-driven (không blocking waitForDone()
+        # trong luồng Worker - xem quyết định kiến trúc Bước 3, mục 1).
+        self._total_files = 0
+        self._processed_count = 0
+        self._batch_start_time = 0.0
+
+    def configure(
+            self, input_folder: Path, output_excel: Path, thread_count: int = 1
+    ) -> None:
         self._input_folder = Path(input_folder)
         self._output_excel = Path(output_excel)
+        self._thread_count = max(1, thread_count)
 
     @Slot()
     def run(self) -> None:
@@ -77,6 +147,7 @@ class Worker(QObject):
 
     def cancel(self) -> None:
         self._cancel_requested = True
+        self._thread_pool.clear()
 
     @property
     def results(self) -> list[PDFResult]:
@@ -147,54 +218,80 @@ class Worker(QObject):
             self.cancelled.emit()
             return
 
-        total = len(pdf_files)
+        self._total_files = len(pdf_files)
+        self._processed_count = 0
+        self._batch_start_time = time.time()
 
-        start_time = time.time()
-        avg_digital_time = 0.15
-        avg_ocr_time = 2.0
-        digital_count = 0
-        ocr_count = 0
+        if self._total_files == 0:
+            self._write_excel()
+            self.finished.emit()
+            return
 
-        for index, pdf_file in enumerate(pdf_files, start=1):
+        self._thread_pool.setMaxThreadCount(self._thread_count)
+
+        for pdf_file in pdf_files:
+            task = PDFTaskRunnable(self, pdf_file, lambda: self._cancel_requested)
+            task.signals.completed.connect(self._on_task_completed)
+            task.signals.failed.connect(self._on_task_failed)
+            self._thread_pool.start(task)
+
+        # process() return ngay - KHÔNG blocking waitForDone(). Toàn bộ tổng
+        # hợp kết quả/trigger finished diễn ra qua _on_task_completed()/
+        # _on_task_failed() (quyết định kiến trúc Bước 3, mục 1).
+
+    @Slot(object)
+    def _on_task_completed(self, result: PDFResult) -> None:
+        """Slot chạy trên luồng Worker (Qt tự queue qua thread affinity)."""
+        if self._cancel_requested:
+            return
+
+        self._results.append(result)
+        self.file_processed.emit(result)
+        self._advance_progress()
+
+    @Slot(str, str)
+    def _on_task_failed(self, pdf_path: str, message: str) -> None:
+        """
+        Trường hợp hiếm: lỗi ngoài dự kiến thoát khỏi mọi try/except trong
+        _process_pdf() (vốn đã tự bắt Exception ở từng stage - xem
+        _process_pdf() hiện có). Giữ batch tiếp tục thay vì crash toàn bộ,
+        đối xứng triết lý fail-soft per-item đã có (ADR-031/032/033).
+        """
+        if self._cancel_requested:
+            return
+
+        result = PDFResult(
+            source_file=Path(pdf_path),
+            relative_path=Path(pdf_path),
+            file_name=Path(pdf_path).name,
+            status=ProcessStatus.FAILED,
+            note=message,
+        )
+        self._results.append(result)
+        self.file_processed.emit(result)
+        self._advance_progress()
+
+    def _advance_progress(self) -> None:
+        self._processed_count += 1
+
+        elapsed_seconds = time.time() - self._batch_start_time
+        elapsed_str = self._format_time(elapsed_seconds)
+
+        remaining = self._total_files - self._processed_count
+        if remaining > 0 and self._processed_count > 0:
+            eta_seconds = (elapsed_seconds / self._processed_count) * remaining
+            eta_str = self._format_time(eta_seconds)
+        else:
+            eta_str = "00:00:00"
+
+        self.progress.emit(self._processed_count, self._total_files, elapsed_str, eta_str)
+
+        if self._processed_count >= self._total_files:
             if self._cancel_requested:
                 self.cancelled.emit()
-                return
-
-            file_start = time.time()
-            result = self._process_pdf(pdf_file)
-            file_duration = time.time() - file_start
-
-            if result.pdf_type == PDFType.DIGITAL:
-                digital_count += 1
-                avg_digital_time = 0.7 * avg_digital_time + 0.3 * file_duration
             else:
-                ocr_count += 1
-                avg_ocr_time = 0.7 * avg_ocr_time + 0.3 * file_duration
-
-            elapsed_seconds = time.time() - start_time
-            elapsed_str = self._format_time(elapsed_seconds)
-
-            remaining_files = total - index
-            if remaining_files > 0:
-                processed_so_far = digital_count + ocr_count
-                ocr_ratio = ocr_count / processed_so_far if processed_so_far > 0 else 0.5
-
-                est_remaining_ocr = remaining_files * ocr_ratio
-                est_remaining_digital = remaining_files * (1.0 - ocr_ratio)
-
-                eta_seconds = (est_remaining_digital * avg_digital_time) + (
-                    est_remaining_ocr * avg_ocr_time
-                )
-                eta_str = self._format_time(eta_seconds)
-            else:
-                eta_str = "00:00:00"
-
-            self._results.append(result)
-            self.file_processed.emit(result)
-            self.progress.emit(index, total, elapsed_str, eta_str)
-
-        self._write_excel()
-        self.finished.emit()
+                self._write_excel()
+                self.finished.emit()
 
     def _process_pdf(self, pdf_file: Path) -> PDFResult:
         """Read, classify, extract, and parse one PDF without accessing the UI."""

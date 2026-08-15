@@ -169,6 +169,10 @@ class UIText:
     REPORT_OPEN_FAILED = "Could not open the report file."
     ERROR_TITLE = "Error"
 
+    # Thread Selector
+    THREAD_COUNT = "Threads"
+    THREAD_HINT_FORMAT = "Detected {cores} CPU core(s). Recommended: {recommended}."
+
 
 class PDFDetection:
     """

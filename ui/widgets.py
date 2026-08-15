@@ -6,6 +6,7 @@ Hiện tại:
 from __future__ import annotations
 from pathlib import Path
 from PySide6.QtCore import Signal
+from core.system.hardware import get_cpu_info
 from core.domain.constants import Progress, UIText
 from ui.base_widget import BaseWidget
 from PySide6.QtWidgets import (
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QTableView,
     QAbstractItemView,
+    QComboBox,
 )
 
 
@@ -121,6 +123,71 @@ class PathSelectorWidget(BaseWidget):
     def reset(self) -> None:
 
         self.clear()
+
+
+# =============================================================================
+# Thread Selector Widget
+# =============================================================================
+
+# =============================================================================
+# Thread Selector Widget
+# =============================================================================
+
+class ThreadSelectorWidget(BaseWidget):
+    """
+    Widget chọn số luồng xử lý song song (MULTI_THREAD_SPECIFICATION.md §3.2).
+    Cấu trúc:
+        Threads
+        +--------+
+        | 6    ▼ |
+        +--------+
+    Lựa chọn giới hạn trong [1, recommended_threads] - KHÔNG mở rộng tới
+    total_cores thật của máy. Tránh người dùng vô tình chọn số luồng vượt
+    mức khuyến nghị (rủi ro nghẽn I/O/tràn RAM do render ảnh 450 DPI song
+    song, xem MULTI_THREAD_SPECIFICATION.md §2.2). Giá trị mặc định =
+    recommended_threads (lựa chọn cuối cùng trong danh sách).
+    """
+
+    def __init__(self, parent=None) -> None:
+        _, self._recommended_threads = get_cpu_info()
+        super().__init__(parent)
+
+    # -------------------------------------------------------------------------
+    # Protected Life Cycle
+    # -------------------------------------------------------------------------
+
+    def _create_widgets(self) -> None:
+        self.lbl_title = QLabel(UIText.THREAD_COUNT)
+
+        self.combo_threads = QComboBox()
+        self.combo_threads.addItems(
+            [str(n) for n in range(1, self._recommended_threads + 1)]
+        )
+        self.combo_threads.setCurrentIndex(self._recommended_threads - 1)
+
+    def _create_layout(self) -> None:
+        row_layout = QHBoxLayout()
+        row_layout.addWidget(self.combo_threads)
+        row_layout.addStretch()
+
+        main_layout = QVBoxLayout(self)
+        main_layout.addWidget(self.lbl_title)
+        main_layout.addLayout(row_layout)
+
+    def _connect_signals(self) -> None:
+        pass
+
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+
+    def thread_count(self) -> int:
+        """Trả về số luồng người dùng đã chọn."""
+        return int(self.combo_threads.currentText())
+
+    def reset(self) -> None:
+        """Đưa về giá trị khuyến nghị ban đầu."""
+        self.combo_threads.setCurrentIndex(self._recommended_threads - 1)
 
 # =============================================================================
 # Progress Widget

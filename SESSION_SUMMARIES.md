@@ -1129,7 +1129,83 @@ chưa qua xác nhận.
 
 ------------------------------------------------------------------------
 
-**Đóng v1 hoàn tất cả 3 Part** (Session 2026-08-12/13/14). Trạng thái
-hiện tại của dự án: xem `PROJECT_CONTEXT.md`. Danh sách thay đổi theo
-file: xem `CHANGELOG.md`. Quyết định kiến trúc: xem
-`ARCHITECTURE_DECISIONS.md`.
+# Session 2026-08-15 — Mở v2.0: Multi-Threading (Bước 1-3/5)
+
+## Mục tiêu
+
+Bắt đầu chính thức v2.0 của dự án (người dùng xác nhận đầu phiên).
+Triển khai `MULTI_THREAD_SPECIFICATION.md` theo đúng lộ trình 5 bước,
+tuần tự từng bước, verify trước khi sang bước kế (Rule 2/3/12).
+
+## Hoàn thành
+
+Bước 1 (`core/system/hardware.py` + test), Bước 2
+(`ThreadSelectorWidget`), Bước 3 (`PDFTaskSignals`/`PDFTaskRunnable`/
+tái cấu trúc `Worker.process()`).
+
+## Quyết định kiến trúc
+
+→ ADR-067.
+
+## Bối cảnh thảo luận
+
+### Bước 2: điều chỉnh sau thực nghiệm — QSpinBox → QComboBox
+
+Sau khi verify Bước 2 lần đầu (QSpinBox, giới hạn `[1, total_cores]`),
+người dùng phát hiện qua thực nghiệm 2 vấn đề: (1) muốn ComboBox thay
+SpinBox; (2) giới hạn `[1, total_cores]` cho phép chọn vượt mức
+`recommended_threads` — rủi ro người dùng chọn nhầm số luồng cao hơn
+mức an toàn đã tính toán. Sửa: `QComboBox` giới hạn
+`[1, recommended_threads]`, bỏ hẳn `total_cores` khỏi phạm vi lựa
+chọn; bỏ luôn `lbl_hint`/`THREAD_HINT_FORMAT` (không còn cần thiết vì
+giới hạn đã tự thân đóng vai trò khuyến nghị).
+
+### Bước 3: xung đột `MULTI_THREAD_SPECIFICATION.md` §4 vs ADR-008
+
+Trước khi code Bước 3, Assistant tự phát hiện (không phải người dùng
+đặt câu hỏi) mâu thuẫn giữa đặc tả gốc (§4 bước 5: ghi Excel cho phần
+đã xử lý được khi Stop) và ADR-008/`PROJECT_CONTEXT.md` §17 (frozen
+rule: Excel chỉ ghi 1 lần, sau khi MỌI PDF xong). Trình bày 2 phương
+án (A: giữ ADR-008; B: amend ADR-008 cho v2.0) — không tự chọn theo
+Rule 1. Người dùng chọn **Phương án A** (giữ nguyên ADR-008).
+
+### Thảo luận sau Bước 3: `bool` vs `threading.Event` cho cancellation flag
+
+Người dùng hỏi lợi ích của việc đổi `bool` (đọc qua closure từ Pool
+thread) sang `threading.Event`. Giải thích: GIL của CPython đảm bảo an
+toàn ở mức bytecode (không torn read/write) cho cách dùng hiện tại
+(đọc 1 lần, không polling); `threading.Event` có 2 lợi ích lý thuyết
+chưa cần dùng đến ở thiết kế hiện tại — (1) "happens-before" guarantee
+tường minh qua API `threading` thay vì phụ thuộc chi tiết implementation
+GIL; (2) khả năng `wait(timeout)` hiệu quả, không cần trong thiết kế
+hiện tại (chỉ check 1 lần, không loop chờ). Khuyến nghị giữ `bool` cho
+v2.0 hiện tại (Rule 9). Người dùng chọn: ghi nhận vào nhật ký, không
+áp dụng ngay.
+
+## Validation
+
+Bước 1: `pytest -v` PASS toàn bộ (người dùng tự verify, không có chi
+tiết log cụ thể trong phiên). Bước 2: chạy UI thật 2 vòng (trước và
+sau điều chỉnh QComboBox), người dùng xác nhận thành công. Bước 3:
+người dùng xác nhận "đã triển khai và chạy thực nghiệm" — chưa có mô
+tả chi tiết kịch bản test cụ thể (số file, số luồng, kết quả đo được)
+trong phiên này.
+
+## Phiên tiếp theo
+
+Bước 4 (hoàn thiện Stop — test kịch bản 100 file, Stop giữa chừng,
+xác nhận UI không đơ + Excel xuất đúng số lượng hoàn thành TRƯỚC thời
+điểm Stop theo đúng Phương án A vừa chốt, tức là **không** ghi gì nếu
+Stop trước khi tất cả xong). Bước 5 (test tương thích đa nền tảng +
+đo hiệu năng v1 vs v2, theo §5 của đặc tả — 5 nguyên tắc tương thích
+macOS/Windows chưa được rà soát riêng trong phiên này). Cân nhắc:
+`bool` vs `threading.Event` cho cancellation flag (ghi nhận, chưa áp
+dụng — xem PROJECT_CONTEXT.md §14).
+
+## Ghi chú
+
+Phiên này chính thức đánh dấu chuyển sang v2.0 theo yêu cầu người
+dùng đầu phiên. Quy trình đóng băng thiết kế trước khi code (Rule 11)
+được áp dụng nghiêm ngặt ở Bước 3 — trình bày đủ 5 quyết định kiến
+trúc + 1 xung đột phát hiện độc lập trước khi viết bất kỳ dòng code
+nào, theo đúng mô hình đã thiết lập từ v1.
