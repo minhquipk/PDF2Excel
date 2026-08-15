@@ -35,10 +35,10 @@ class Table:
     )
 
     COLUMN_WIDTH = {
-        "PDF": 280,
+        "PDF": 320,
         "TYPE": 100,
-        "STATUS": 120,
-        "NOTE": 500,
+        "STATUS": 110,
+        "NOTE": 470,
     }
 
 
@@ -64,7 +64,6 @@ class Report:
 class Image:
     """Cấu hình render ảnh trang PDF."""
     DPI = 450
-    COLORSPACE = "rgb"
 
 
 class OCR:
@@ -171,6 +170,39 @@ class UIText:
     ERROR_TITLE = "Error"
 
 
+class PDFDetection:
+    """
+    Cấu hình ngưỡng/trọng số cho PDFDetector (Reasoning Engine).
+    Toàn bộ giá trị dưới đây là ước lượng ban đầu dựa trên
+    PDF_Detector_Technical_Design.docx và thực nghiệm ban đầu (Session
+    2026-07-29), CẦN TINH CHỈNH khi có thêm dữ liệu PDF thật đa dạng hơn
+    - cùng nhóm "placeholder cần tinh chỉnh" với TemplateMatching.*/OCR.*.
+    """
+    # --- Ngưỡng quyết định DIGITAL (rule text_coverage) ---
+    DIGITAL_TEXT_PAGE_RATIO = 0.80
+    DIGITAL_AVERAGE_TEXT_LENGTH = 20
+
+    # --- Ngưỡng quyết định HYBRID (rule mixed_content) ---
+    HYBRID_CONTENT_PAGE_RATIO = 0.25
+
+    # --- Ngưỡng cảnh báo chất lượng tài liệu (rule content_coverage) ---
+    HIGH_EMPTY_PAGE_RATIO = 0.25
+
+    # --- Quyết định cuối (_decide_mode) ---
+    DECISION_TIE_MARGIN = 0.10
+
+    # --- Confidence Composition (_compose_confidence) ---
+    EVIDENCE_SCORE_SCALE = 1.40
+
+    # --- Document Rule / Graphics Rule (ADR-057, RC-001/RC-004) ---
+    # CHƯA qua thực nghiệm với dữ liệu thật (khác các ngưỡng phía trên đã
+    # verify trên PDF thật) - weight cố ý đặt thấp để không làm lệch các
+    # quyết định biên đã ổn định.
+    DOCUMENT_RULE_WEIGHT = 0.20
+    GRAPHICS_RULE_WEIGHT = 0.20
+    GRAPHICS_DRAWING_PAGE_RATIO = 0.50
+
+
 class TemplateMatching:
     """
     Cấu hình cho TemplateMatcher (Parser).
@@ -205,6 +237,29 @@ class TemplateMatching:
     # Áp dụng RIÊNG cho Section (field thường không có cơ chế này) - quyết
     # định trong phiên thảo luận Nhóm 3.1/3.2 (Section).
     SECTION_TIE_MARGIN = 10
+
+
+class Currency:
+    """
+    Cấu hình cho ValueConverter._to_decimal()/_strip_currency_suffix()
+    (ADR-051). Định dạng số mặc định theo quy ước Việt Nam; danh sách
+    hậu tố VND chia 2 nhóm theo mức rủi ro strip nhầm - xem ADR-051.
+    """
+    # Định dạng số mặc định khi FieldDefinition.decimal_format không khai
+    # báo. Khớp quy ước phân cách số của hóa đơn Việt Nam (ADR-014).
+    DEFAULT_THOUSAND_SEPARATOR = "."
+    DEFAULT_DECIMAL_SEPARATOR = ","
+
+    # Hậu tố đơn vị tiền tệ VND — strip vô điều kiện trước khi parse
+    # Decimal (ADR-051). Biến thể ≥2 ký tự hoặc ký tự Unicode riêng biệt
+    # (₫) không thể là 1 phần hợp lệ khác của số Decimal -> an toàn để
+    # strip không điều kiện.
+    SUFFIXES = ("vnd", "vnđ", "₫")
+
+    # Biến thể 1 ký tự ('đ'/'Đ') CẦN ràng buộc vị trí riêng (chỉ strip
+    # khi liền sau chữ số) - khác SUFFIXES vì 1 ký tự chữ đơn lẻ có rủi
+    # ro trùng nội dung khác cao hơn nhiều so với chuỗi 2+ ký tự.
+    SINGLE_CHAR_SUFFIXES = ("đ", "Đ")
 
 
 class NumberRepair:

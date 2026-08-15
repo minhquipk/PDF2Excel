@@ -102,6 +102,18 @@ class PathSelectorWidget(BaseWidget):
 
         return Path(text)
 
+    def is_empty(self) -> bool:
+        """
+        Kiểm tra ô nhập đường dẫn có trống hay không.
+
+        Kiểm tra trực tiếp trên text, KHÔNG dùng `not self.path()` - vì
+        `pathlib.Path` không override `__bool__`, nên `bool(Path())` luôn
+        là True bất kể đường dẫn có nội dung hay không (kể cả Path() rỗng
+        mặc định) - bẫy truthiness khiến validate rỗng ở MainWindow._start()
+        chưa từng thật sự hoạt động.
+        """
+        return not self.edit_path.text().strip()
+
     def clear(self) -> None:
 
         self.edit_path.clear()

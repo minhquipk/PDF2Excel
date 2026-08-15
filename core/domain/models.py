@@ -71,7 +71,6 @@ class PDFResult:
     Trạng thái xử lý của một file PDF.
     Dùng để hiển thị trên QTableView.
     """
-    session_id: int = 0
     source_file: Path = Path()
     relative_path: Path = Path()
     file_name: str = ""
@@ -426,6 +425,17 @@ class TemplateDefinition:
                     f"không tồn tại trong 'sections' của template '{self.template_id}'. "
                     f"Section hợp lệ: {sorted(valid_section_ids)}."
                 )
+
+        total_weight = sum(f.identification_weight for f in self.fields)
+        if total_weight <= 0:
+            raise ValueError(
+                f"Template '{self.template_id}' có tổng identification_weight "
+                f"của mọi field = 0 - template này sẽ KHÔNG BAO GIỜ được chọn "
+                f"(TemplateMatcher._score_template() luôn trả score=0.0 do chia "
+                f"cho tổng weight = 0). Cần gán identification_weight > 0 cho "
+                f"ít nhất 1 field định danh nhà cung cấp (VD tax_code, "
+                f"company_name)."
+            )
 
 
 @dataclass(slots=True, frozen=True)

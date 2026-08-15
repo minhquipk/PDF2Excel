@@ -32,9 +32,34 @@ class OCREngine:
     đây, không lộ ra ngoài contract recognize() - Extractor không cần
     biết trang có bị nghiêng hay không, chỉ nhận bbox đã đúng vị trí
     trên page_image gốc (canvas giữ nguyên kích thước sau deskew).
+
+    Kiểm tra sự tồn tại của tessdata_best (vie.traineddata) được trì
+    hoãn đến lần đầu tiên recognize() thực sự được gọi (xem
+    _ensure_traineddata()), KHÔNG thực hiện trong __init__() - khác
+    thiết kế ban đầu của ADR-047. Lý do: Worker.__init__() khởi tạo
+    Extractor()/OCREngine() vô điều kiện ngay khi mở ứng dụng (trước
+    khi biết batch có PDF Scanned/Hybrid nào không), nên fail-fast
+    trong __init__() khiến TOÀN BỘ ứng dụng crash ngay lúc khởi động
+    nếu thiếu tessdata_best - kể cả với người dùng chỉ xử lý PDF
+    Digital, không bao giờ chạm tới OCR. Xem amend ADR-047.
     """
 
     def __init__(self) -> None:
+        # Cấu hình Tesseract dựng 1 lần, tái sử dụng cho mọi lần gọi
+        # recognize() - không đổi giữa các trang/PDF trong cùng batch.
+        self._config = f'--tessdata-dir "{TESSDATA_DIR}" --psm {OCR.PSM} --oem {OCR.OEM}'
+        self._traineddata_checked = False
+
+    def _ensure_traineddata(self) -> None:
+        """Kiểm tra vie.traineddata tồn tại - chỉ chạy thật sự lần đầu.
+
+        Cache qua self._traineddata_checked để không lặp lại I/O này ở
+        mỗi trang/mỗi PDF trong cùng batch (recognize() có thể được gọi
+        hàng trăm/nghìn lần trong 1 lượt xử lý).
+        """
+        if self._traineddata_checked:
+            return
+
         traineddata = TESSDATA_DIR / f"{OCR.LANG}.traineddata"
         if not traineddata.exists():
             raise FileNotFoundError(
@@ -43,9 +68,7 @@ class OCREngine:
                 f"và đặt vào '{TESSDATA_DIR}'."
             )
 
-        # Cấu hình Tesseract dựng 1 lần, tái sử dụng cho mọi lần gọi
-        # recognize() - không đổi giữa các trang/PDF trong cùng batch.
-        self._config = f'--tessdata-dir "{TESSDATA_DIR}" --psm {OCR.PSM} --oem {OCR.OEM}'
+        self._traineddata_checked = True
 
     def recognize(
         self,
@@ -56,7 +79,16 @@ class OCREngine:
         Coordinates are pixel-space of ``page_image`` (top-left origin,
         y-down), matching ``page_image.width`` / ``page_image.height`` -
         không đổi kể cả sau khi deskew nội bộ (canvas cố định).
+
+        Raises
+        ------
+        FileNotFoundError
+            Nếu thiếu vie.traineddata (kiểm tra lazy, xem
+            _ensure_traineddata()) - chỉ raise khi hàm này thực sự được
+            gọi lần đầu, không phải lúc __init__().
         """
+        self._ensure_traineddata()
+
         image = self._to_numpy_array(page_image)
         image = self._deskew(image)
         image = self._preprocess(image)

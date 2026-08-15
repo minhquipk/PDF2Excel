@@ -147,14 +147,14 @@ class MainWindow(QMainWindow):
             self.output_widget.set_path(file_name)
 
     def _start(self) -> None:
-        if not self.input_widget.path():
+        if self.input_widget.is_empty():
             QMessageBox.warning(
                 self,
                 UIText.WARNING_TITLE,
                 UIText.INPUT_FOLDER_REQUIRED,
             )
             return
-        if not self.output_widget.path():
+        if self.output_widget.is_empty():
             QMessageBox.warning(
                 self,
                 UIText.WARNING_TITLE,
@@ -174,7 +174,6 @@ class MainWindow(QMainWindow):
         self._thread.start()
 
     def _stop(self) -> None:
-        # TODO: worker.stop()
         self._worker.cancel()
 
     def _report(self) -> None:

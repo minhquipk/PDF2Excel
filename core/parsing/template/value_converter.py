@@ -14,24 +14,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from core.domain.enums import ValueType
 from core.domain.models import FieldDefinition
-from core.domain.constants import NumberRepair
-
-# Giá trị mặc định khi FieldDefinition.decimal_format không khai báo.
-# Khớp quy ước phân cách số của hóa đơn Việt Nam (ADR-014: Vietnamese Data).
-_DEFAULT_THOUSAND_SEPARATOR = "."
-_DEFAULT_DECIMAL_SEPARATOR = ","
-
-# Hậu tố đơn vị tiền tệ VND — strip vô điều kiện trước khi parse Decimal
-# (ADR-051, đối xứng ADR-043 cho ký hiệu '%'). Các biến thể ≥2 ký tự
-# hoặc ký tự Unicode riêng biệt (₫) không thể là 1 phần hợp lệ khác
-# của số Decimal -> an toàn để strip không điều kiện.
-_CURRENCY_SUFFIXES = ("vnd", "vnđ", "₫")
-
-# Biến thể 1 ký tự ('đ'/'Đ') CẦN ràng buộc vị trí riêng (xem
-# _strip_currency_suffix()) - khác _CURRENCY_SUFFIXES vì 1 ký tự chữ
-# đơn lẻ có rủi ro trùng nội dung khác cao hơn nhiều so với chuỗi
-# 2+ ký tự (ADR-051).
-_SINGLE_CHAR_CURRENCY_SUFFIXES = ("đ", "Đ")
+from core.domain.constants import Currency, NumberRepair
 
 
 class ValueConverter:
@@ -63,8 +46,8 @@ class ValueConverter:
             raw_text: str,
             decimal_format: dict[str, str] | None,
     ) -> Decimal | None:
-        thousand_sep = _DEFAULT_THOUSAND_SEPARATOR
-        decimal_sep = _DEFAULT_DECIMAL_SEPARATOR
+        thousand_sep = Currency.DEFAULT_THOUSAND_SEPARATOR
+        decimal_sep = Currency.DEFAULT_DECIMAL_SEPARATOR
 
         if decimal_format:
             thousand_sep = decimal_format.get("thousand_separator", thousand_sep)
@@ -119,13 +102,13 @@ class ValueConverter:
           hơn ở trên).
         """
         lowered = normalized.lower()
-        for suffix in _CURRENCY_SUFFIXES:
+        for suffix in Currency.SUFFIXES:
             if lowered.endswith(suffix):
                 return normalized[: -len(suffix)].strip()
 
         if (
                 normalized
-                and normalized[-1] in _SINGLE_CHAR_CURRENCY_SUFFIXES
+                and normalized[-1] in Currency.SINGLE_CHAR_SUFFIXES
                 and len(normalized) > 1
                 and normalized[-2].isdigit()
         ):

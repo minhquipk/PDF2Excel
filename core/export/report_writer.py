@@ -42,6 +42,17 @@ class ReportWriter:
         self._log_results(results)
         return self._write_report_file(excel_result)
 
+    @staticmethod
+    def expected_path(reports_dir: Path) -> Path:
+        """
+        Đường dẫn report.txt cố định, không đổi giữa các lần chạy (tên
+        không có timestamp - ADR-040). Dùng để kiểm tra sự TỒN TẠI của
+        report từ lần chạy trước đó, KHÔNG cần đã gọi write() trong phiên
+        Worker hiện tại - phục vụ Worker.report_path fallback về report
+        cũ khi người dùng mở lại app mà chưa Start (xem amend ADR-041).
+        """
+        return Path(reports_dir) / f"{Report.FILE_PREFIX}{Report.FILE_EXTENSION}"
+
     # ------------------------------------------------------------------
     # Loại 1: list[PDFResult] -> logger (dev/admin)
     # ------------------------------------------------------------------
@@ -68,7 +79,7 @@ class ReportWriter:
 
     def _write_report_file(self, excel_result: ExcelWriteResult) -> Path:
         self._reports_dir.mkdir(parents=True, exist_ok=True)
-        report_path = self._reports_dir / f"{Report.FILE_PREFIX}{Report.FILE_EXTENSION}"
+        report_path = self.expected_path(self._reports_dir)
 
         content = self._format_report(excel_result)
         report_path.write_text(content, encoding="utf-8")

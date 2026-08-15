@@ -2,36 +2,40 @@
 
 # PDF Invoice Extractor
 
-> Project Context & Architecture Handover
+> Tài liệu Bàn Giao Bối Cảnh & Kiến Trúc Dự Án
 >
-> This document is the single source of truth for the project.
-> Any architectural change must be discussed before implementation.
+> File này là **living document** — luôn phản ánh trạng thái HIỆN TẠI
+> của dự án (bức ảnh chụp tại thời điểm đọc), khác với
+> `CHANGELOG.md`/`SESSION_SUMMARIES.md`/`ARCHITECTURE_DECISIONS.md`
+> vốn là lịch sử. Mọi thay đổi kiến trúc phải được thảo luận trước khi
+> implement (xem `DEVELOPMENT_WORKFLOW.md`).
+>
+> **Trạng thái tại thời điểm cập nhật gần nhất:** đã đóng xong v1 (đủ
+> cả 3 Part, Session 2026-08-12/13/14). Đang ở giai đoạn chuẩn bị tài
+> liệu chuyển giao ứng dụng và lên kế hoạch v2.0.
 
----
+------------------------------------------------------------------------
 
-# 1. Project Goal
+# 1. Mục Tiêu Dự Án
 
-Build a desktop application using Python to automatically extract information
-from a large number of PDF invoices and write the extracted data into an
-existing Excel template.
+Xây dựng ứng dụng desktop bằng Python để tự động trích xuất thông tin
+từ số lượng lớn hóa đơn PDF và ghi dữ liệu trích xuất được vào 1
+template Excel có sẵn.
 
-Main requirements:
+Yêu cầu chính:
+- Quét toàn bộ 1 thư mục đệ quy.
+- Hỗ trợ hàng nghìn file PDF.
+- Tự động phát hiện PDF Digital / PDF OCR (scan).
+- Trích xuất thông tin hóa đơn.
+- Lưu kết quả trung gian trong bộ nhớ.
+- Chỉ ghi Excel đúng 1 lần sau khi mọi file đã xử lý xong.
+- Sinh báo cáo lỗi để rà soát thủ công.
 
-- Scan an entire folder recursively.
-- Support thousands of PDF files.
-- Detect Digital PDF / OCR PDF automatically.
-- Extract invoice information.
-- Store intermediate results in memory.
-- Write Excel only once after all files have been processed.
-- Generate an error report for manual review.
+Đối tượng người dùng: nhân viên văn phòng, không biết lập trình.
 
-Target users:
+------------------------------------------------------------------------
 
-Office users with no programming knowledge.
-
----
-
-# 2. Overall Architecture
+# 2. Kiến Trúc Tổng Quan
 
 ```
 MainWindow
@@ -52,13 +56,13 @@ PDFDetector
 Extractor ──(quyết định gọi khi cần OCR)──> OCREngine
     │
     ▼
-Parser (pending)
+Parser (TemplateMatcher + ValueConverter)
     │
     ▼
 PDFResult
     │
     ▼
-Memory (list[PDFResult])
+Bộ nhớ (list[PDFResult])
     │
     ▼
 ExcelWriter
@@ -67,15 +71,12 @@ ExcelWriter
 ReportWriter ──▶ logs/app.log (list[PDFResult]) + reports/Report.txt (ExcelWriteResult)
 ```
 
-UI is completely separated from business logic.
+UI hoàn toàn tách biệt khỏi business logic. `Worker` không bao giờ
+truy cập UI trực tiếp. Giao tiếp chỉ qua Qt Signal.
 
-Worker never accesses UI directly.
+------------------------------------------------------------------------
 
-Communication is only through Qt Signals.
-
----
-
-# 3. Current Project Structure
+# 3. Cấu Trúc Project Hiện Tại
 
 ```
 config.py
@@ -122,6 +123,9 @@ tests/
     core/
         extraction/
             test_extractor.py
+        parsing/
+            template/
+                test_value_converter.py
 
 resources/
     excel_mapping.json
@@ -130,719 +134,457 @@ resources/
     templates/
         sample_invoice_v1.json
 ```
-*(Tái cấu trúc hoàn tất Session 2026-08-13, xem CHANGELOG.md và ADR-060.
-`models/` top-level cũ đã đổi thành `ui/models/`. `core/` chia theo
-pipeline stage thay vì phẳng.)*
 
----
+Tái cấu trúc theo pipeline stage hoàn tất Session 2026-08-13 (xem
+ADR-060). `models/` top-level cũ đã đổi thành `ui/models/`. `core/`
+chia theo giai đoạn pipeline thay vì phẳng như trước.
 
-# 4. Modules Completed
+------------------------------------------------------------------------
 
-Completed:
+# 4. Trạng Thái Các Module
 
-- constants.py
-- enums.py
-- models.py
-- pdf_reader.py — reads PDF via PyMuPDF, builds `PDFDocument`;
-  also reads raw word tuples (`words`) and renders a raw grayscale
-  `PageImage` (300 DPI) for every page.
-- pdf_detector.py — full reasoning engine (Build Context, Heuristic
-Evaluation, Knowledge Lookup, Confidence Composition, Final
-Decision) per PDF_Detector_Technical_Design.docx. Từ đợt đóng
-v1 (Part 1): đủ 7/7 Rule Category theo TDS §7.2 (Text, Image,
-Consistency, Quality, Layout, Document, Graphics — 2 rule cuối mới
-thêm, xem ADR-057, CHƯA qua thực nghiệm với dữ liệu thật đa dạng,
-trọng số cố ý thấp). Warning hiển thị nay sắp theo độ ưu tiên
-RuleCategory thay vì thứ tự rule chạy (ADR-055).
-- extractor.py — dispatches extraction strategy per
-  `DocumentAnalysis.mode` (Digital / OCR / per-page Hybrid);
-  normalizes word geometry (incl. rotation reconciliation for the
-  Digital path) into `WordToken`s ready for Parser.
-- ocr_engine.py — **Real implementation** (Tesseract 5.x + tessdata_best
-  qua `pytesseract`), thay Mock (ADR-013). Xem ADR-047 (lịch sử lựa
-  chọn), ADR-049 (deskew). Không dùng Lazy Loading (khác ADR-046 vốn
-  cho bản PaddleOCR đã loại bỏ).
-- base_widget.py
-- widgets.py
-- main_window.py
-- worker.py — pipeline integration completed end-to-end: Reader →
-  Detector → Extractor (conditional on a valid mode) → Parser →
-  ExcelWriter → ReportWriter, all wired in `Worker._write_excel()`
-  (ADR-037/038/040).
-- processing_table_model.py
-- value_converter.py — stateless TEXT/DECIMAL/DATE conversion, không
-  raise (trả None khi thất bại). Từ Session 2026-08-07: `_to_decimal()`
-  strip ký tự `%` cuối chuỗi trước khi parse (ADR-043).
-- template_loader.py — đọc/validate JSON Template Definition, fail-soft
-  per file. Từ Session 2026-08-07: parse thêm `sections` và field bắt
-  buộc `section` trên mỗi field.
-- template_matcher.py — Key Matching (Line/Phrase Clustering + fuzzy,
-  chuẩn hoá dấu tiếng Việt) → Score/Decision → Windowing → Value
-  Matching. Từ Session 2026-08-07: Key Matching nay giới hạn phạm vi
-  theo Section (khối tài liệu field thuộc về - `SectionDefinition`,
-  giải quyết va chạm key_tokens giữa các khối, VD bên bán/bên mua, xem
-  ADR-045); Value Matching field Text nay ghép nhiều `WordToken` liền
-  kề cùng dòng thành 1 giá trị thay vì chỉ lấy 1 token (ADR-044).
-- parser.py — orchestrator mỏng, trả `InvoiceInfo | None`.
-- excel_mapper.py — `Mapper.load()` đọc/validate `resources/excel_mapping.json`
-  thành `ExcelMapping`; lỗi là fatal (khác `template_loader.py`), raise
-  `MappingError` (ADR-038).
-- excel_writer.py — `ExcelWriter.write()` ghi `list[InvoiceInfo]` vào
-  Excel Table có sẵn (openpyxl); trả `ExcelWriteResult` (dữ liệu thuần,
-  không tự log/report — ADR-006, ADR-037); cột mapping không khớp
-  workbook thực tế → soft-fail vào `ExcelWriteResult.errors` (ADR-039).
-- report_writer.py — `ReportWriter.write()` có 2 kênh output tách biệt:
-  `list[PDFResult]` → `logs/app.log` (qua `utils/logger.py`, dev/admin,
-  tích lũy qua các lần chạy); `ExcelWriteResult` → `reports/Report.txt`
-  (end-user, ghi đè mỗi lần chạy) (ADR-040).
-- utils/logger.py — logger dùng chung, console handler + `FileHandler`
-  (`logs/app.log`, UTF-8, đúng ADR-014) — bổ sung khi triển khai
-  report_writer.py.
-- requirements.txt — pin version 4 dependency đã xác nhận qua kiểm thử
-  thực tế: `PySide6==6.11.1`, `PyMuPDF==1.28.0`, `rapidfuzz==3.14.5`,
-  `openpyxl==3.1.5`.
-- resources/EXCEL_MAPPING_GUIDE.md — hướng dẫn viết `excel_mapping.json`
-  cho người điều hành không biết lập trình (Session 2026-08-07).
-- resources/TEMPLATE_AUTHORING_GUIDE.md — hướng dẫn viết Template
-Definition JSON cho người điều hành không biết lập trình, đúc kết
-toàn bộ quy tắc/ràng buộc đã phát sinh qua thực nghiệm từ các phiên
-trước (Session 2026-08-01/02, 2026-08-07). Đóng Known Issue mở từ
-Session 2026-08-01/02.
-- tests/core/test_extractor.py — unit test đầu tiên của dự án
-(framework pytest, khai báo trong requirements-dev.txt riêng
-biệt với requirements.txt). 9 test case cho
-Extractor._rotate_bbox() (4 rotation × verify hình học tay + 2
-round-trip identity check). tests/core/ được thống nhất làm chuẩn
-cấu trúc cho mọi test module sau này.
-- - **Tái cấu trúc thư mục `core/`** theo pipeline stage (domain/reading/
-  detection/extraction/parsing/parsing/template/export) và đổi
-  `models/` top-level thành `ui/models/` — hoàn tất Session 2026-08-13,
-  verify qua `pytest -v` + UI thật end-to-end. Xem ADR-060.
+## Đã hoàn thành (production code, không còn Mock)
 
+- **`core/domain/`** — `models.py` (toàn bộ domain model, frozen
+  dataclass theo đúng chỗ), `enums.py`, `constants.py` (tập trung mọi
+  hằng số threshold, xem ADR-063).
+- **`core/reading/pdf_reader.py`** — đọc PDF qua PyMuPDF, dựng
+  `PDFDocument`; đọc raw word tuples (`words`) và render `PageImage`
+  RGB (450 DPI) cho mọi trang.
+- **`core/detection/pdf_detector.py`** — reasoning engine đầy đủ 7/7
+  Rule Category theo TDS §7.2 (Text, Image, Consistency, Quality,
+  Layout, Document, Graphics). 2 rule cuối (Document/Graphics) mới,
+  trọng số cố ý thấp, **chưa qua thực nghiệm với dữ liệu thật đa
+  dạng** (xem §14 nhóm Detection).
+- **`core/extraction/extractor.py`** — dispatch chiến lược extraction
+  theo `DocumentAnalysis.mode` (Digital/OCR/per-page Hybrid); chuẩn
+  hóa hình học + text whitespace thành `WordToken`.
+- **`core/extraction/ocr_engine.py`** — **implementation thật**
+  (Tesseract 5.x + tessdata_best qua `pytesseract`), thay Mock từ
+  Session 2026-08-08/09 (ADR-047). Kiểm tra `vie.traineddata` trì
+  hoãn đến lần đầu `recognize()` (ADR-061) — app không crash lúc mở
+  nếu thiếu tessdata và batch chỉ toàn PDF Digital.
+- **`core/parsing/`** — `parser.py` (orchestrator mỏng),
+  `template/template_loader.py`, `template/template_matcher.py` (Key
+  Matching + Section-scoped + Windowing + Value Matching gap-based),
+  `template/value_converter.py` (TEXT/DECIMAL/DATE, stateless, không
+  raise, tự phục hồi số OCR nhầm dấu).
+- **`core/export/`** — `excel_mapper.py`, `excel_writer.py` (ghi vào
+  Excel Table có sẵn qua openpyxl), `report_writer.py` (2 kênh output
+  tách biệt, cả 2 đều ghi đè mỗi lần chạy — ADR-050).
+- **`ui/`** — `base_widget.py`, `widgets.py`, `main_window.py`,
+  `worker.py` (pipeline tích hợp end-to-end đầy đủ:
+  Reader → Detector → Extractor → Parser → ExcelWriter → ReportWriter).
+- **`ui/models/processing_table_model.py`**.
+- **`utils/logger.py`** — console + `FileHandler` (`logs/app.log`,
+  UTF-8, ghi đè mỗi lần chạy).
+- **`requirements.txt`** — pin version đã xác nhận qua kiểm thử thực
+  tế: `PySide6==6.11.1`, `PyMuPDF==1.28.0`, `rapidfuzz==3.14.5`,
+  `openpyxl==3.1.5`, `pytesseract==0.3.13`.
+- **`requirements-dev.txt`** — `pytest==8.3.4` (tách khỏi
+  `requirements.txt` vì không cần cho end-user).
+- **`resources/EXCEL_MAPPING_GUIDE.md`** — hướng dẫn viết
+  `excel_mapping.json` cho người điều hành không biết lập trình.
+- **`resources/TEMPLATE_AUTHORING_GUIDE.md`** — hướng dẫn viết
+  Template Definition JSON, đúc kết toàn bộ quy tắc/ràng buộc phát
+  sinh qua thực nghiệm nhiều phiên.
+- **Test tự động (2 module, `tests/core/`):**
+  `test_extractor.py` (9 case cho `_rotate_bbox()`),
+  `test_value_converter.py` (9 nhóm test cho `ValueConverter`).
 
-Current UI features:
+## Tính năng UI hiện tại
 
-- Input folder
-- Output Excel
-- Start
-- Stop
-- Report
-- Exit
-- Progress bar
-- Processing table
+Input folder, Output Excel, Start, Stop, Report, Exit, Progress bar,
+Processing table (hiển thị `relative_path` — ADR-058).
 
-Still pending (not yet implemented):
+## Còn để ngỏ, có chủ đích (không phải bug)
 
-- Real OCR backend (ocr_engine.py currently Mock only) — deliberately
-  deferred until after end-to-end verification with real sample PDFs
-  (see Section 15, Next Tasks). Mock is sufficient for Digital-mode
-  PDFs, which do not invoke OCREngine at all.
-- Tài liệu hướng dẫn viết Template JSON (Template Authoring Guide)
-- `resources/excel_mapping.json` vẫn còn là mapping mẫu (`tblInvoices`),
-  chưa khớp workbook Excel thật của người dùng — bước 2 trong kế hoạch
-  5 bước ở Section 15 vẫn chưa thực hiện.
-- Chưa có lượt chạy UI thật (Input Folder → Start → Report) trên ứng
-  dụng thật với dữ liệu PDF thật — `sample_invoice_v1.json` (v3) mới chỉ
-  verify bằng script kiểm thử trực tiếp gọi `PDFReader`/`Extractor`/
-  `TemplateMatcher` trong sandbox, KHÔNG phải qua `Worker`/`MainWindow`
-  thật.
+- **`resources/excel_mapping.json`** vẫn là mapping mẫu (`tblInvoices`),
+  chưa khớp workbook Excel thật của người dùng cuối — quyết định lùi
+  sang giai đoạn làm tài liệu chuyển giao ứng dụng (không thuộc phạm
+  vi đóng v1 code).
+- **Tài liệu hướng dẫn cài đặt OCR cho end-user** (Tesseract binary hệ
+  thống — không cài qua `pip`; `vie.traineddata` phải tự tải/đặt vào
+  `TESSDATA_DIR`) — chưa có tài liệu dạng `EXCEL_MAPPING_GUIDE.md`
+  tương đương. Lùi sang giai đoạn chuyển giao.
+- **`core/processor.py`** — đã xóa hoàn toàn (Session 2026-08-12).
+  Vai trò orchestrator (ADR-004) chính thức thuộc về `Worker.process()`.
 
-Resolved this session (previously "Still pending" or "Known Issues" —
-now implemented and verified, see Section 14/15 for verification
-caveats):
+------------------------------------------------------------------------
 
-- excel_writer.py — implemented (`core/excel_writer.py`), see ADR-037/
-  038/039.
-- Report export — implemented (`core/report_writer.py`); UI Report
-  button now opens a real generated `reports/Report.txt` (ADR-040/041),
-  no longer a "pending" placeholder message.
-- Dependency pinning — `requirements.txt` added at project root
-  (previously an open item since Session 2026-08-01/02).
-
-Note: `core/processor.py` currently contains only placeholder method
-calls (`start/stop/pause/resume`) with no implementation. The actual
-orchestrator responsibility (per ADR-004) is currently fulfilled by
-`Worker.process()`, not by `processor.py`. This needs clarification
-(see Section 14).
-
-Known limitation (deferred to v2.0): pages with both a text layer and
-materially relevant image content are extracted from a single source
-only (text-layer wins). See CHANGELOG.md / SESSION_SUMMARIES.md,
-Session 2026-07-31.
-
----
-
-# 5. Data Flow
+# 5. Luồng Dữ Liệu (Data Flow)
 
 ```
 Path
   ↓ (PDFReader.read)
 PDFDocument
   ↓ (PDFDetector.analyze)
-DocumentAnalysis  ──┐
-  ↓                 │ (cả 2 cùng làm input cho Extractor)
-PDFDocument ─────────┘
-  ↓ (Extractor.extract)
-ExtractionResult
-  ↓ (Parser — pending)
-InvoiceInfo
+DocumentAnalysis
+  ↓ (Extractor.extract — bỏ qua nếu mode UNKNOWN, ADR-027)
+ExtractionResult (words_by_page, page_images)
+  ↓ (Parser.parse — TemplateMatcher + ValueConverter)
+InvoiceInfo | None
   ↓
-PDFResult
-  ↓ (accumulate)
+PDFResult (pdf_type/status/note từ DocumentAnalysis, invoice từ Parser)
+  ↓ (tích lũy trong Worker.process(), 1 PDF/lần — ADR-006)
 list[PDFResult]
-  ↓ (ExcelWriter — pending)
-.xlsx
+  ↓ (ExcelWriter.write — đúng 1 lần cuối batch, ADR-008)
+.xlsx + ExcelWriteResult
+  ↓ (ReportWriter.write)
+logs/app.log (list[PDFResult]) + reports/Report.txt (ExcelWriteResult)
 ```
 
-The application NEVER writes Excel while processing each PDF.
+Ứng dụng KHÔNG BAO GIỜ ghi Excel trong lúc xử lý từng PDF. Excel chỉ
+được ghi đúng 1 lần sau khi mọi PDF đã xử lý xong.
 
-Excel is written only once after all PDFs have been processed.
+------------------------------------------------------------------------
 
----
+# 6. Các Quyết Định Thiết Kế Quan Trọng
 
-# 6. Important Design Decisions
+Phần này tóm tắt các nguyên tắc thiết kế cốt lõi bằng ngôn ngữ đơn
+giản. Lý do kỹ thuật đầy đủ: xem ADR tương ứng trong
+`ARCHITECTURE_DECISIONS.md`.
 
-## Memory First
+## Memory First (→ ADR-006, ADR-007)
 
-PDFs are processed one by one.
+PDF được xử lý từng file một. Mỗi PDF được giải phóng khỏi bộ nhớ ngay
+sau khi xử lý xong. Chỉ object `PDFResult` còn lại trong bộ nhớ —
+giảm mạnh mức dùng bộ nhớ.
 
-Each PDF is immediately released from memory after processing.
+## Ghi Excel Đúng 1 Lần (→ ADR-008)
 
-Only PDFResult objects remain in memory.
+Ghi Excel tốn kém. Không bao giờ ghi sau mỗi PDF. Chỉ ghi 1 lần ở cuối.
 
-This greatly reduces memory usage.
+## Trách Nhiệm Của `process()` (→ ADR-004)
 
----
-
-## Single Excel Write
-
-Excel writing is expensive.
-
-Never write after each PDF.
-
-Write only once at the end.
-
----
-
-## process() Responsibility
-
-process() is an orchestrator.
-
-It must NEVER contain PDF parsing logic.
-
-Correct structure:
+`process()` là orchestrator. KHÔNG BAO GIỜ chứa logic parse PDF.
 
 ```
 for pdf in pdf_files:
-
     result = _process_pdf(pdf)
-
     results.append(result)
-
 _write_excel()
 ```
-This orchestrator responsibility is currently implemented as
-`Worker.process()` in `ui/worker.py`.
 
----
+Trách nhiệm orchestrator này hiện được implement là
+`Worker.process()` trong `ui/worker.py`.
 
-## _process_pdf()
+## Trách Nhiệm Của `_process_pdf()` (→ ADR-005, ADR-024, ADR-029)
 
-All business logic belongs here.
+Toàn bộ business logic nằm ở đây (`Worker._process_pdf()`):
 
-Current implementation (`Worker._process_pdf()`):
+```
+PDF → PDFReader → PDFDetector → Extractor (nếu mode hợp lệ) →
+Parser → PDFResult
+```
 
-PDF
+`PDFDetector` là reasoning engine tất định. Nó nhận `PDFDocument` bất
+biến, dựng `AnalysisContext` bất biến, giữ lại toàn bộ `Evidence`
+heuristic, tùy chọn tham vấn `KnowledgeRecord` read-only, và trả về
+`DocumentAnalysis` bất biến kèm `Confidence` giải thích được.
 
-↓
+## Trách Nhiệm Của Reader (→ ADR-016, ADR-025)
 
-PDF Reader
+`PDFReader` chỉ đọc nội dung PDF và chuyển object PyMuPDF thành domain
+model bất biến. `PDFReader` KHÔNG được thực hiện: OCR, regex parsing,
+trích xuất hóa đơn, phân loại PDF, phân tích dữ liệu, validate
+business. `PDFReader` là ranh giới giữa PyMuPDF và domain của dự án.
 
-↓
+## Chiến Lược `PDFDocument` (→ ADR-025)
 
-PDF Detector
+`PDFDocument` giữ toàn bộ text của tài liệu. Lý do: Parser hưởng lợi
+từ việc giữ quan hệ giữa các trang và ngữ cảnh tài liệu. Mức dùng bộ
+nhớ vẫn chấp nhận được vì chỉ 1 PDF được xử lý tại 1 thời điểm.
 
-↓
+## Chiến Lược Analyzer / Knowledge System (→ ADR-019, ADR-023)
 
-PDFResult (pdf_type / status / note derived from DocumentAnalysis)
+Vai trò "Analyzer" (thu thập thống kê tài liệu, dựng knowledge cache
+tái sử dụng) hiện được `PDFDetector` (Rule System + Confidence Model)
+đảm nhiệm theo thiết kế trong `PDF_Detector_Technical_Design.docx`.
+Việc lưu trữ/quản lý vòng đời `KnowledgeRecord` (TDS Chapter 9) mới
+dừng ở mức thiết kế, **chưa implement trong source** (xem §14 nhóm
+Detection).
 
-The detector is a deterministic reasoning engine. It receives only an
-immutable PDFDocument, builds an immutable AnalysisContext, preserves all
-heuristic Evidence, optionally consults a read-only KnowledgeRecord, and
-returns an immutable DocumentAnalysis with explainable Confidence.
+## Source of Truth (→ ADR-018)
 
-This integration is now real (not Mock) — `Worker._process_pdf()` calls
-`PDFReader.read()` and `PDFDetector.analyze()` directly. Extraction,
-regex parsing, and Excel writing are still pending and not yet wired
-into this method.
+Implementation luôn dựa trên source code hiện tại. Lịch sử chat không
+bao giờ là tham chiếu implementation.
 
----
+------------------------------------------------------------------------
 
-## Reader Responsibility
-
-PDFReader is responsible only for reading PDF content and converting
-PyMuPDF objects into immutable domain models.
-
-PDFReader MUST NOT perform:
-
-- OCR
-- Regex parsing
-- Invoice extraction
-- PDF classification
-- Data analysis
-- Business validation
-
-PDFReader is the boundary between PyMuPDF and the project domain.
-
-## PDFDocument Strategy
-
-PDFDocument keeps the complete document text.
-
-Reason:
-
-Parser benefits from preserving page relationships and document context.
-
-Memory usage remains acceptable because only one PDF is processed at a time.
-
-## Analyzer Strategy
-
-Analyzer is responsible for collecting document statistics and building
-a reusable knowledge cache.
-
-Analyzer does not perform OCR or machine learning.
-
-Knowledge grows incrementally from previous processing sessions.
-
-Note: in the current source, this "Analyzer" role is fulfilled by
-`PDFDetector` (Rule System + Confidence Model) as designed in
-`PDF_Detector_Technical_Design.docx`. `KnowledgeRecord` accumulation /
-lifecycle management (Knowledge System, TDS Chapter 9) is defined at
-the design level but not yet implemented in source.
-
-## Source of Truth
-
-Implementation must always be based on the current project source code.
-
-Chat history must never be treated as the implementation reference.
-
-# 7. UI Design
-
-Layout:
+# 7. Thiết Kế UI
 
 ```
 Input Folder
-
 Output Excel
-
 ---------------------------
-
         Start   Stop
-
 ---------------------------
-
 Progress
-
 ---------------------------
-
 Processing Table
-
 ---------------------------
-
              Report Exit
 ```
 
-Processing Table columns:
+Cột của Processing Table:
 
-| Column | Description         |
-|--------|---------------------|
-| PDF    | File name           |
-| TYPE   | Digital / OCR       |
-| STATUS | OK / ERROR / OCR... |
-| NOTE   | Detailed message    |
+| Cột    | Mô tả                        |
+|--------|-------------------------------|
+| PDF    | Đường dẫn tương đối (relative_path — ADR-058) |
+| TYPE   | Digital / OCR                 |
+| STATUS | OK / ERROR / OCR...            |
+| NOTE   | Thông điệp chi tiết            |
 
----
+------------------------------------------------------------------------
 
-# 8. Worker Design
+# 8. Thiết Kế Worker
 
-Worker runs in its own QThread.
+`Worker` chạy trong `QThread` riêng. `MainWindow` không bao giờ thực
+hiện tác vụ nặng.
 
-MainWindow never performs heavy work.
+Signal: `started`, `progress`, `file_processed`, `finished`,
+`cancelled`, `error`.
 
-Signals:
+PDF discovery dùng `Worker._discover_pdf_files()` (dựa trên
+`os.walk()`, cancellable, case-insensitive — ADR-066), không dùng
+`Path.rglob()` (blocking, không hủy được giữa chừng).
 
-- started
-- progress
-- file_processed
-- finished
-- cancelled
-- error
+------------------------------------------------------------------------
 
----
+# 9. Chiến Lược Progress
 
-# 9. Progress Strategy
+Progress dựa trên `số PDF đã xử lý / tổng số PDF`. Elapsed time và ETA
+được cập nhật riêng.
 
-Progress is based on
+------------------------------------------------------------------------
 
-processed PDFs / total PDFs
-
-Elapsed time and ETA are updated separately.
-
----
-
-# 10. Coding Conventions
+# 10. Quy Ước Coding
 
 - Python 3.12+
-- Type hints everywhere.
-- Dataclass for data models.
-- Enum for fixed values.
-- One responsibility per class.
-- No business logic inside UI.
-- Avoid global variables.
-- Prefer composition over inheritance.
-
----
-
-# 11. Libraries
-
-GUI
-
-- PySide6
-
-PDF
-
-- PyMuPDF (fitz) — in use by pdf_reader.py (text, words, and page
-  image rendering)
-
-OCR
-
-- Tesseract 5.x + tessdata_best (qua `pytesseract`) - xem ADR-047.
-  Lưu ý: Tesseract là binary hệ thống, KHÔNG cài qua `pip` - phải tự
-  cài riêng (`brew install tesseract` macOS). `vie.traineddata`
-  (tessdata_best) cũng phải tự tải/đặt vào `TESSDATA_DIR`
-  (`resources/tessdata_best/`, xem `config.py`).
-
-Image
-
-- No separate library needed for rendering — PyMuPDF's
-  `Page.get_pixmap()` covers this (see ADR-026). `pdf2image` is not
-  currently required.
-
-Excel
-
-- openpyxl — dùng bởi `excel_writer.py` để ghi vào Excel Table có sẵn
-  (đọc/mở rộng `table.ref`, ghi cell theo `ExcelMapping`).
-
-Regex
-
-- re
-
-Data
-
-- dataclasses
-
-Fuzzy Matching
-
-- rapidfuzz — dùng bởi template_matcher.py cho Key Matching.
-
-Dependency file: `requirements.txt` (project root) — pin các package (`PySide6`, `PyMuPDF`, `rapidfuzz`, `openpyxl`, `paddleocr`, `numpy`, `opencv-contrib-python`), phiên bản đã được xác nhận qua kiểm thử thực tế.
-
----
-
-# 12. Development Workflow
-
-Always develop incrementally.
-
-Each step must compile.
-
-Each step must run.
-
-Never implement multiple modules simultaneously.
-
-Typical workflow:
-
-1.
-
-Implement
-
-↓
-
-Compile
-
-↓
-
-Run
-
-↓
-
-Verify
-
-↓
-
-Commit
-
-2.
-
-Continue.
-
----
-
-# 13. Mock Mode
-
-Mock mode was used before implementing real PDF processing.
-
-Worker generated fake PDFResult objects during early UI/Worker/Thread
-validation.
-
-Purpose (historical):
-
-- Test UI
-- Test Thread
-- Test Signals
-- Test TableModel
-
-Current status: Mock processing has been replaced by the real
-pipeline end-to-end: PDFReader → PDFDetector → Extractor → Parser →
-ExcelWriter → ReportWriter, all wired in `ui/worker.py`. `OCREngine`
-remains a Mock (ADR-013) — this only affects Scanned/Hybrid-mode
-pages; Digital-mode PDFs (the majority case) do not invoke it at all.
-The pipeline has been verified with unit-level and mocked-input tests
-(see SESSION_SUMMARIES.md, Session 2026-08-03) but **not yet** with a
-real user-driven run against real sample PDF data through the actual
-UI — that is the planned next step (see Section 15).
-
----
-
-# 14. Known Issues
-
-Current:
-
-- **Giới hạn kiến trúc của TemplateMatcher với giá trị đa dòng (multi-line
-  value) và phụ thuộc `max_distance` tĩnh** — KHÔNG phải bug patch được
-  ở tầng heuristic v1; là giới hạn nền tảng của phương pháp hình học
-  tĩnh (chưa gặp thật trên dữ liệu test A4 hiện có, đánh giá rủi ro cho
-  layout A5/bảng biểu phụ). Đã cân nhắc và bác bỏ 2 hướng vá (window
-  động theo Key/Section kế tiếp; khóa `direction=BELOW`). Lời giải
-  triệt để thuộc kế hoạch v2.0 (LayoutLM). Xem ADR-059.
-- Rủi ro lý thuyết còn tồn đọng (chưa đủ dữ liệu đánh giá tần suất,
-  tổng hợp lại): gap-based merge tràn field (ADR-044); section header
-  va chạm lý thuyết (ADR-045); 2 trường hợp biên của ADR-052 (OCR mất
-  hẳn dấu phân cách - không còn dấu vết vị trí để suy luận; cụm cuối
-  đúng 3 chữ số trùng ngẫu nhiên với `decimal_separator` đã cấu hình).
-- Real OCR backend not implemented (`ocr_engine.py` is Mock only) —
-  intentionally deferred, see Section 15.
-- Knowledge System (TDS Chapter 9: lifecycle, governance, sources)
-  is defined at the design level only; no persistence/lifecycle
-  management exists in source yet.
-- Extractor routes mixed-content pages (text + image) to a single
-  source only; dual-source extraction deferred to v2.0 (see
-  Section 4).
-- Value Matching (template_matcher.py) chỉ lấy 1 WordToken đơn lẻ; field
-  nhiều từ (company_name, address) bị cắt cụt. Cần thiết kế ghép cụm
-  Value trước khi Value Matching — deferred, chưa có giải pháp.
-- TemplateMatching.* (core/constants.py) là giá trị ước lượng ban đầu,
-  cần tinh chỉnh khi có PDF hóa đơn thật.
-- resources/templates/sample_invoice_v1.json cố ý giữ 2 lỗi đã biết
-  (key_tokens ngắn, value_pattern lỏng) — chưa sửa, chờ dữ liệu thật.
-- Value Matching nhiều từ (ADR-044, Session 2026-08-07) dùng cơ chế
-  gap-based, dừng mở rộng khi gặp token kết thúc bằng dấu `:`. Rủi ro
-  còn lại: nếu 1 dòng có 2 field liền kề mà nhãn field thứ 2 KHÔNG kết
-  thúc bằng `:`, giá trị vẫn có thể bị ghép tràn sang field kế bên. Mới
-  verify trên 1 PDF test duy nhất — chưa đủ dữ liệu để đánh giá tần
-  suất rủi ro này trên layout đa dạng hơn.
-- Section (ADR-045, Session 2026-08-07) giảm mạnh nhưng KHÔNG loại bỏ
-  hoàn toàn rủi ro va chạm: bản thân section header vẫn dùng chung cơ
-  chế fuzzy match, về lý thuyết vẫn có thể va chạm nếu 2 section dùng
-  `key_tokens` gần giống nhau trên 1 tài liệu khác.
-- `TemplateMatching.SECTION_TIE_MARGIN` (giá trị 10, thang 0-100 của
-  `rapidfuzz.fuzz.ratio()`) là placeholder ban đầu, cùng loại với các
-  hằng số khác trong `TemplateMatching` — cần tinh chỉnh khi có nhiều
-  mẫu hóa đơn thật hơn.
-- `FieldDefinition.section` nay là field BẮT BUỘC (không có default).
-  Mọi template JSON khác ngoài `sample_invoice_v1.json`, nếu phát sinh
-  sau này mà thiếu `section` trên 1 field, sẽ bị `TemplateLoader` skip
-  toàn bộ file đó (fail-soft per file, ADR-031) — cần lưu ý khi viết
-  Template Authoring Guide (mục dưới).
-- Section header 5+ từ có thể không bao giờ đạt fuzzy ratio tuyệt đối
-  do `TemplateMatching.MAX_KEY_WORDS = 4` giới hạn độ dài phrase sinh
-  ra khi Key Matching (VD "THÔNG TIN NGƯỜI MUA HÀNG:" — 5 từ — phải rút
-  gọn `key_tokens` xuống 4 từ để qua được `SECTION_TIE_MARGIN`, xem
-  ADR-045). Ràng buộc này áp dụng cho CẢ field lẫn section.
-- PDFDetector Document Rule/Graphics Rule (ADR-057) là thiết kế mới
-hoàn toàn, chưa qua thực nghiệm với dữ liệu thật đa dạng — trọng số
-(_DOCUMENT_RULE_WEIGHT/_GRAPHICS_RULE_WEIGHT = 0.20), ngưỡng
-(_GRAPHICS_DRAWING_PAGE_RATIO = 0.50) và danh sách từ khóa
-(_SCAN_METADATA_KEYWORDS) đều là placeholder, cùng nhóm cần tinh
-chỉnh với TemplateMatching.*.
-- resources/excel_mapping.json vẫn còn là mapping mẫu, chưa khớp
-workbook Excel thật của người dùng — quyết định hoãn xử lý sang
-giai đoạn làm tài liệu chuyển giao ứng dụng (không thuộc phạm vi
-đóng v1 code, ghi nhận tại đây để không lặp lại thảo luận).
-
-Resolved (previously listed here, now implemented — see Section 4):
-
-- PDF Reader — implemented (`core/pdf_reader.py`).
-- PDF Detector reasoning engine — implemented (`core/pdf_detector.py`).
-- Extractor — implemented (`core/extractor.py`).
-- Regex Parser — implemented (`core/parser.py`, `core/template_matcher.py`).
-- Excel Writer — implemented (`core/excel_writer.py`), see ADR-037/038/039.
-- Report export — implemented (`core/report_writer.py`), see ADR-040/041.
-- Import path issue — re-verified against current source (this
-  session): `core/models.py` now imports via `from core.enums import
-  ...` and `ui/widgets.py` via `from ui.base_widget import
-  BaseWidget`, both with correct package prefixes. The issue described
-  in earlier sessions (Session 2026-07-29) no longer reproduces in the
-  current source; closing as resolved. (Note: it is unclear from
-  available history whether this was fixed deliberately in an
-  undocumented change or was miscategorized originally — flagging for
-  awareness, not re-opening.)
-- Dependency file missing — resolved via `requirements.txt` added at
-  project root, pinning `PySide6`, `PyMuPDF`, `rapidfuzz`, `openpyxl`.
-- Elapsed Time/ETA — implemented
-- OCR: 2 vấn đề chất lượng nhận dạng số tiền (dấu VND dính liền số, và
-  nhầm lẫn dấu ',' / '.') đã được xử lý qua ADR-051/052/053 - PASS toàn
-  bộ test case hiện có, tỷ lệ nhầm lẫn ',' / '.' giảm xuống dưới 0.5%.
-  CHƯA về 0% - các trường hợp biên sau vẫn là giới hạn đã biết, chưa có
-  giải pháp: (a) OCR làm MẤT HẲN dấu phân cách (không còn dấu vết vị trí
-  để suy luận); (b) cụm cuối đúng 3 chữ số trùng ngẫu nhiên với
-  decimal_separator đã cấu hình. Xem ADR-052.
-- `core/ocr_engine.py::_preprocess()` (CLAHE + Sharpen, ADR-053) chuyển
-  ảnh về grayscale nội bộ trước khi xử lý, làm cho lợi ích giữ RGB ở
-  tầng PDFReader (ADR-048/054) không còn tác dụng trực tiếp lên
-  Tesseract ở bước cuối pipeline - RGB vẫn được giữ vì lý do bảo toàn
-  khả năng dùng lại kênh màu trong tương lai (ADR-054), không phải vì
-  lợi ích OCR hiện tại.
-- `Image.DPI = 450` (tăng từ 300, ADR-053) là mức chung cho v1, chưa
-  phân biệt theo khổ giấy/cỡ font - áp dụng cho MỌI trang của MỌI PDF
-  kể cả Digital-mode (chi phí bộ nhớ/thời gian ~2.25x so với 300 DPI cũ,
-  do PDFReader render page_image trước khi PDFDetector quyết định mode -
-  ADR-026). Kế hoạch DPI thích ứng theo khổ giấy đã ghi nhận cho v2.0
-  (xem §18).
-- `NumberRepair.DECIMAL_TAIL_MAX_LENGTH = 3` (core/constants.py) và 4
-  hằng số `OCR.PREPROCESS_*` là giá trị ước lượng ban đầu, cần tinh
-  chỉnh khi có thêm dữ liệu PDF Scanned thật đa dạng hơn - cùng nhóm với
-  `TemplateMatching.*`/`OCR.DESKEW_*` đã ghi nhận trước đó.
-
----
-
-# 15. Next Tasks
-
-Pipeline end-to-end đã hoàn thiện, verify qua chạy thật (UI thật, PDF
-Digital lẫn Scanned). Giai đoạn hiện tại: **đóng v1**, chia 3 phần:
-
-- **Part 1/3 — Xử lý Known Issues từ nhật ký: HOÀN TẤT** (Session
-  2026-08-12).
-- **Part 2/3 — Xử lý vấn đề do người dùng tự ghi nhận: HOÀN TẤT**
-  (Session 2026-08-13). Đã xử lý: memory management review (không phát
-  hiện leak, chỉ đính chính số liệu ADR-048); PDFResult trùng tên khi
-  Input Folder có thư mục con lồng nhau (ADR-058); đánh giá confidence
-  score tăng khi thêm rule (ghi nhận, không cần hành động); trao đổi
-  `excel_mapping.json` với số cột ít hơn `InvoiceInfo` (xác nhận hệ
-  thống hoạt động đúng, không cần sửa code); giới hạn kiến trúc
-  multi-line value (ADR-059); đề xuất tiền xử lý ảnh OCR nâng cao (đã
-  huỷ, ghi nhận "tăng cường hiệu quả OCR" là ưu tiên v2 — xem §18);
-  tái cấu trúc thư mục project (ADR-060).
-- **Part 3/3 — Xử lý vấn đề phát sinh khi quét trực tiếp mã nguồn:**
-  chưa bắt đầu.
-
-`resources/excel_mapping.json` khớp workbook thật và tài liệu hướng
-dẫn cài đặt OCR (Tesseract binary hệ thống, `vie.traineddata`) cho
-end-user được lùi sang giai đoạn làm tài liệu chuyển giao ứng dụng,
-diễn ra sau khi hoàn tất cả 3 Part đóng v1.
-
----
-
-# 16. Previous Problems & Solutions
-
-Problem:
-
-Writing Excel after each PDF.
-
-Solution:
-
-Store PDFResult in memory.
-
-Write once.
-
----
-
-Problem:
-
-UI freezes.
-
-Solution:
-
-Worker + QThread.
-
----
-
-Problem:
-
-Huge memory usage.
-
-Solution:
-
-Release each PDF immediately.
-
-Keep only PDFResult.
-
----
-
-Problem:
-
-Thread updating UI directly.
-
-Solution:
-
-Qt Signals only.
-
----
-
-# 17. DO NOT CHANGE
-
-These architectural rules are frozen.
-
-DO NOT change unless absolutely necessary.
-
-- process() is only an orchestrator.
-- Business logic belongs to _process_pdf().
-- UI never accesses business logic directly.
-- Worker never accesses UI directly.
-- Excel is written only once.
-- PDF is processed one at a time.
-- Results remain in memory.
-- Communication uses Qt Signals only.
-- ProcessingTable uses ProcessingTableModel.
-- Incremental development workflow.
-
----
-
-# 18. Future Improvements
-
-- Logging system
-- Config file
-- Drag & Drop
-- Multi-language UI
-- Dark Mode
-- Unit tests
-- Plugin parser
-- OCR optimization
-- Batch report
-- Tái cấu trúc thư mục source theo module chức năng khi hoàn thiện v1
-  (VD core/parsing/template/, core/parsing/layoutlm/) — đã thảo luận sơ
-  bộ, CHƯA quyết định, cần 1 phiên thảo luận riêng trước khi thực hiện
-  (tránh đổi kiến trúc giữa chừng, theo Rule 1/11).
-- DPI thích ứng theo khổ giấy/cỡ font hóa đơn (v2.0, xem §14/§15,
-  ADR-053) - lựa chọn khổ giấy ở UI.
-- Cho phép người dùng tuỳ chỉnh `NumberRepair.DECIMAL_TAIL_MAX_LENGTH`
-  theo loại hóa đơn (v2.0, xem ADR-052).
-- **Tăng cường hiệu quả OCR (v2.0, ưu tiên quan trọng)** — ghi nhận từ
-  Session 2026-08-13: các đề xuất tiền xử lý ảnh nâng cao (Binarization/
-  Otsu/Adaptive Thresholding, Denoising/Gaussian Blur riêng biệt trước
-  sharpen, Border Removal) đã được thảo luận và huỷ bỏ triển khai ở v1
-  (rủi ro kỹ thuật: Binarization xung đột trực tiếp với cách Tesseract
-  LSTM/OEM=3 tự xử lý ảnh xám nội bộ, có nguy cơ làm trầm trọng thêm
-  vấn đề đuôi dấu phẩy mà ADR-052/053 đang cố giải quyết; Denoising/
-  Border Removal khả thi hơn nhưng chưa có bằng chứng thực nghiệm về
-  nhiễu/viền đen trên dữ liệu thật hiện có). Xếp vào phạm vi v2.0, cần
+- Type hint mọi nơi.
+- Dataclass cho data model.
+- Enum cho giá trị cố định.
+- Mỗi class 1 trách nhiệm.
+- Tránh biến global.
+- Ưu tiên composition hơn inheritance.
+
+------------------------------------------------------------------------
+
+# 11. Thư Viện
+
+| Nhóm | Thư viện |
+|------|----------|
+| GUI | PySide6 |
+| PDF | PyMuPDF (fitz) — text, words, render page image |
+| OCR | Tesseract 5.x + tessdata_best (qua `pytesseract`) — binary hệ thống, KHÔNG cài qua `pip`; `vie.traineddata` (tessdata_best) tự tải vào `TESSDATA_DIR` (`resources/tessdata_best/`) |
+| Ảnh | Không cần thư viện riêng — `Page.get_pixmap()` của PyMuPDF đã đủ (ADR-026); `pdf2image` không cần |
+| Excel | openpyxl — ghi vào Excel Table có sẵn |
+| Regex | `re` |
+| Data | `dataclasses` |
+| Fuzzy Matching | rapidfuzz — dùng bởi `template_matcher.py` |
+| Test | pytest (`requirements-dev.txt`, tách riêng) |
+
+------------------------------------------------------------------------
+
+# 12. Quy Trình Phát Triển
+
+Xem đầy đủ ở `DEVELOPMENT_WORKFLOW.md`. Tóm tắt: phát triển tăng dần,
+mỗi bước phải compile + run + verify trước khi tiếp tục; không bao
+giờ implement nhiều module cùng lúc.
+
+------------------------------------------------------------------------
+
+# 13. Mock Mode (đã kết thúc vai trò)
+
+Mock Mode được dùng trước khi implement xử lý PDF thật — mục đích lịch
+sử: test UI, test Thread, test Signal, test TableModel.
+
+**Trạng thái hiện tại:** không còn module nào ở trạng thái Mock. Toàn
+bộ pipeline là production code: `PDFReader` → `PDFDetector` →
+`Extractor` → `OCREngine` (Tesseract thật, thay Mock từ Session
+2026-08-08/09) → `Parser` → `ExcelWriter` → `ReportWriter`, tất cả đã
+wire vào `ui/worker.py`. Pipeline đã được verify qua chạy UI thật
+end-to-end nhiều lần (Input Folder → Start → Report) với PDF Digital
+và Scanned thật.
+
+------------------------------------------------------------------------
+
+# 14. Vấn Đề Đã Biết (Known Issues)
+
+Phân nhóm theo pipeline stage để dễ tra cứu khi đang làm việc trên 1
+module cụ thể. Mỗi mục có pointer `→ ADR-xxx` cho lý do kỹ thuật đầy
+đủ.
+
+## Detection (`PDFDetector`)
+
+- **Document Rule / Graphics Rule** (`document_metadata`,
+  `vector_graphics_coverage`) là thiết kế mới hoàn toàn, **chưa qua
+  thực nghiệm với dữ liệu thật đa dạng**. Trọng số
+  (`_DOCUMENT_RULE_WEIGHT`/`_GRAPHICS_RULE_WEIGHT` = 0.20), ngưỡng
+  (`_GRAPHICS_DRAWING_PAGE_RATIO` = 0.50), và danh sách từ khóa
+  (`_SCAN_METADATA_KEYWORDS`) đều là placeholder ban đầu. → ADR-057.
+- **Knowledge System** (TDS Chapter 9: lifecycle, governance,
+  nguồn dữ liệu) chỉ mới ở mức thiết kế — chưa có persistence/
+  lifecycle management trong source. → ADR-019, ADR-023.
+
+## Extraction / OCR
+
+- **Extractor route trang hỗn hợp (text + ảnh) về 1 nguồn duy nhất**
+  (text-layer thắng nếu có) — nội dung ảnh liên quan (con dấu, chữ ký)
+  trên trang đó bị bỏ qua. Hoãn có chủ đích sang v2.0 (dual-source +
+  cần thiết kế khử trùng bbox-overlap). → xem SESSION_SUMMARIES.md,
+  Session 2026-07-31.
+- **Tỷ lệ nhầm lẫn dấu `,`/`.` khi OCR** còn dưới 0.5%, **chưa về
+  0%**. 2 trường hợp biên chưa có giải pháp: (a) OCR làm mất hẳn dấu
+  phân cách (không còn dấu vết vị trí để suy luận); (b) cụm cuối đúng
+  3 chữ số trùng ngẫu nhiên với `decimal_separator` đã cấu hình. →
+  ADR-052, ADR-053.
+- **`NumberRepair.DECIMAL_TAIL_MAX_LENGTH`** (= 3) và 4 hằng số
+  `OCR.PREPROCESS_*` là giá trị ước lượng ban đầu, cần tinh chỉnh khi
+  có thêm dữ liệu PDF Scanned thật đa dạng hơn. → ADR-052, ADR-053.
+- **`Image.DPI` = 450** là mức chung cho v1, chưa phân biệt theo khổ
+  giấy/cỡ font — áp dụng cho MỌI trang của MỌI PDF kể cả Digital-mode
+  (chi phí bộ nhớ/thời gian ~2.25x so với 300 DPI cũ). Kế hoạch DPI
+  thích ứng theo khổ giấy đã ghi nhận cho v2.0 (xem §18). → ADR-053.
+
+## Parsing / Template Matching
+
+- **Giới hạn kiến trúc với giá trị đa dòng (multi-line value) và phụ
+  thuộc `max_distance` tĩnh** — KHÔNG phải bug patch được ở tầng
+  heuristic v1; là giới hạn nền tảng của phương pháp hình học tĩnh
+  (chưa gặp thật trên dữ liệu test A4 hiện có, đánh giá rủi ro cho
+  layout A5/bảng biểu phụ). Lời giải triệt để thuộc kế hoạch v2.0
+  (LayoutLM). → ADR-059.
+- **Gap-based merge có thể tràn field** (ADR-044) nếu 1 dòng có 2
+  field liền kề mà nhãn field thứ 2 KHÔNG kết thúc bằng `:` (khác quy
+  ước đã quan sát) — chưa gặp thật trên dữ liệu hiện có.
+- **Section header vẫn có thể va chạm lý thuyết** (ADR-045) nếu 2
+  section dùng `key_tokens` gần giống nhau trên 1 tài liệu khác.
+- **`TemplateMatching.SECTION_TIE_MARGIN`** (= 10) và các hằng số
+  `TemplateMatching.*` khác là giá trị placeholder ban đầu, cần tinh
+  chỉnh khi có nhiều mẫu hóa đơn thật hơn.
+- **Section header 5+ từ** có thể không bao giờ đạt fuzzy ratio tuyệt
+  đối do `MAX_KEY_WORDS = 4` — cần rút gọn `key_tokens`. Đã ghi vào
+  `TEMPLATE_AUTHORING_GUIDE.md`.
+- **`resources/templates/sample_invoice_v1.json`** hiện là template
+  duy nhất của dự án (v4) — chưa có template thứ 2 để verify tính tổng
+  quát của thiết kế Section/Value Matching trên layout khác A4.
+
+## Export (`ExcelWriter` / `ReportWriter`)
+
+- **`ExcelWriter._is_total_row_present()`** dùng thuộc tính nội bộ của
+  `openpyxl` (`totalsRowCount`/`totalsRowShown`), không thuộc API công
+  khai ổn định lâu dài — an toàn tại version đã pin (`openpyxl==3.1.5`),
+  **cần re-verify nếu nâng cấp version `openpyxl`** trong tương lai.
+  → ADR-039.
+- **`resources/excel_mapping.json` vẫn là mapping mẫu**
+  (`tblInvoices`), chưa khớp workbook Excel thật của người dùng cuối —
+  quyết định hoãn xử lý sang giai đoạn làm tài liệu chuyển giao ứng
+  dụng (không thuộc phạm vi đóng v1 code).
+
+## UI / Worker
+
+Không có Known Issue nào đang mở ở nhóm này tính đến cuối v1 — các bug
+UI đã phát hiện (Report chỉ mở được sau khi Start, Start không validate
+input rỗng, Stop không hủy được PDF discovery) đều đã xử lý tại Session
+2026-08-14 (ADR-064/065/066).
+
+## Kiến trúc / Cross-cutting
+
+- **Test coverage tự động mới có 2 module** (`Extractor._rotate_bbox()`,
+  `ValueConverter`) — phần lớn pipeline vẫn dựa vào "chạy thật để
+  verify" thủ công thay vì automated test. Chưa có test cho
+  `PDFDetector`, `TemplateMatcher`, `ExcelWriter`, `ReportWriter`.
+- **Cơ chế đối chiếu định kỳ tài liệu vs source** (Rule 15,
+  `DEVELOPMENT_WORKFLOW.md`) mới được thêm — chưa từng được áp dụng
+  thực tế lần nào kể từ khi thêm. Sự kiện gốc khiến rule này ra đời
+  (mismatch ADR-027 tồn tại nhiều tuần không ai phát hiện, xem
+  ADR-056) là bài học nền cho rule, không phải bằng chứng rule đã hoạt
+  động.
+
+------------------------------------------------------------------------
+
+# 15. Việc Tiếp Theo (Next Tasks)
+
+Pipeline end-to-end đã hoàn thiện, verify qua chạy thật. **Đóng v1: đã
+HOÀN TẤT CẢ 3 PHẦN** (Part 1/3 — Session 2026-08-12; Part 2/3 —
+Session 2026-08-13; Part 3/3 — Session 2026-08-14).
+
+## Giai đoạn tiếp theo (chưa bắt đầu)
+
+1. **Tài liệu chuyển giao ứng dụng:**
+   - `resources/excel_mapping.json` khớp workbook Excel thật của
+     người dùng cuối.
+   - Tài liệu hướng dẫn cài đặt OCR cho end-user (Tesseract binary hệ
+     thống, `vie.traineddata`).
+2. **v2.0 planning** (chỉ mới ghi nhận định hướng, chưa thiết kế chi
+   tiết):
+   - LayoutLM-based Parser engine, thay thế/bổ sung song song
+     `TemplateMatcher` cho giá trị đa dòng và layout đa dạng. → ADR-059.
+   - Dual-source extraction cho trang hỗn hợp (text + ảnh).
+   - DPI thích ứng theo khổ giấy/cỡ font thay vì `Image.DPI` cố định.
+     → ADR-053.
+   - Tăng cường hiệu quả OCR (Binarization/Denoising/Border Removal —
+     cần bằng chứng thực nghiệm mới trước khi quyết định, đã cân nhắc
+     và hoãn tại Session 2026-08-13).
+   - Cho phép người dùng tùy chỉnh `NumberRepair.DECIMAL_TAIL_MAX_LENGTH`
+     theo loại hóa đơn.
+
+------------------------------------------------------------------------
+
+# 16. Vấn Đề & Giải Pháp Trước Đây (tóm tắt)
+
+| Vấn đề | Giải pháp |
+|--------|-----------|
+| Ghi Excel sau mỗi PDF | Lưu `PDFResult` trong bộ nhớ, ghi 1 lần |
+| UI bị treo (freeze) | `Worker` + `QThread` |
+| Dùng bộ nhớ quá lớn | Giải phóng từng PDF ngay sau xử lý, chỉ giữ `PDFResult` |
+| Thread cập nhật UI trực tiếp | Chỉ dùng Qt Signal |
+
+------------------------------------------------------------------------
+
+# 17. KHÔNG ĐƯỢC THAY ĐỔI (Frozen)
+
+Các quy tắc kiến trúc sau đã được đóng băng. KHÔNG thay đổi trừ khi
+thật sự cần thiết (và phải thảo luận trước — Rule 1/11).
+
+- `process()` chỉ là orchestrator.
+- Business logic thuộc về `_process_pdf()`.
+- UI không bao giờ truy cập business logic trực tiếp.
+- `Worker` không bao giờ truy cập UI trực tiếp.
+- Excel chỉ được ghi đúng 1 lần.
+- PDF được xử lý từng file một.
+- Kết quả giữ trong bộ nhớ.
+- Giao tiếp chỉ qua Qt Signal.
+- `ProcessingTable` dùng `ProcessingTableModel`.
+- Quy trình phát triển tăng dần.
+
+------------------------------------------------------------------------
+
+# 18. Cải Tiến Tương Lai (Future Improvements)
+
+- Config file cho người dùng tùy chỉnh.
+- Drag & Drop.
+- Đa ngôn ngữ UI.
+- Dark Mode (`ui/theme.py` đã có sẵn, hiện còn trống — không phải dead
+  code, có định hướng rõ).
+- Mở rộng test coverage (hiện chỉ 2/nhiều module).
+- Plugin parser.
+- Batch report.
+- Tái cấu trúc thư mục source theo module chức năng — **đã hoàn tất**
+  (Session 2026-08-13, xem ADR-060). Mục này giữ lại như ghi chú lịch
+  sử, không còn là việc cần làm.
+- **DPI thích ứng theo khổ giấy/cỡ font hóa đơn** (v2.0) — 400 DPI cho
+  font >10pt/A4 chuẩn, 600 DPI cho font <8pt/A5 hoặc A4 có bảng chỉ số
+  phụ — cho phép người dùng chọn khổ giấy ở UI. → ADR-053.
+- **Tăng cường hiệu quả OCR** (v2.0, ưu tiên quan trọng) — Binarization/
+  Denoising/Border Removal đã thảo luận và hoãn ở v1 (xem §14 nhóm
+  Extraction/OCR và SESSION_SUMMARIES.md, Session 2026-08-13). Cần
   đánh giá lại có/không có bằng chứng thực nghiệm mới trước khi quyết
   định triển khai.
+- **LayoutLM-based Parser** (v2.0) — xem §15 và ADR-059.
+- **Dual-source extraction** cho trang hỗn hợp (v2.0) — xem §14 nhóm
+  Extraction/OCR.
+
+------------------------------------------------------------------------

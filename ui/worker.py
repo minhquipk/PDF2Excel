@@ -1,3 +1,4 @@
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -52,7 +53,6 @@ class Worker(QObject):
         templates = TemplateLoader(TEMPLATES_DIR).load_all()
         self._parser = Parser(TemplateMatcher(templates))
 
-        self._ocr_reader = None
         self._excel_writer = ExcelWriter()
         self._report_writer = ReportWriter(REPORTS_DIR)
         self._report_path: Optional[Path] = None
@@ -84,7 +84,20 @@ class Worker(QObject):
 
     @property
     def report_path(self) -> Optional[Path]:
-        return self._report_path
+        """
+        Trả về report.txt của phiên xử lý hiện tại (nếu đã Start ít nhất
+        1 lần trong lần mở app này); nếu chưa, fallback kiểm tra report.txt
+        còn sót lại từ lần chạy trước trên đĩa (ReportWriter.expected_path()) -
+        cho phép người dùng xem lại report cũ ngay cả khi vừa mở lại ứng
+        dụng mà chưa bấm Start. Nút Report KHÔNG tự sinh report trong cả 2
+        trường hợp (ADR-041 vẫn giữ nguyên, chỉ mở rộng phạm vi "đã tồn tại
+        sẵn" - xem amend ADR-041).
+        """
+        if self._report_path is not None:
+            return self._report_path
+
+        fallback = ReportWriter.expected_path(REPORTS_DIR)
+        return fallback if fallback.exists() else None
 
     @staticmethod
     def _format_time(seconds: float) -> str:
@@ -96,8 +109,44 @@ class Worker(QObject):
         minutes, secs = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
+    def _discover_pdf_files(self) -> list[Path] | None:
+        """
+        Duyệt đệ quy Input Folder tìm file .pdf (case-insensitive trên
+        mọi OS - chấp nhận cả .PDF/.Pdf, khác Path.rglob("*.pdf") cũ vốn
+        phụ thuộc case-sensitivity của hệ điều hành).
+
+        Có thể bị huỷ giữa chừng qua self._cancel_requested, kiểm tra sau
+        mỗi file/thư mục con - phản hồi gần như tức thời, khác
+        Path.rglob() cũ (1 lệnh blocking, generator bị sorted() ép chạy
+        hết 1 mạch, không có điểm nào để Stop có tác dụng giữa chừng).
+
+        Returns
+        -------
+        list[Path]
+            Danh sách file PDF tìm được (đã sort), nếu quét xong hoàn
+            toàn không bị huỷ.
+        None
+            Nếu bị huỷ (self._cancel_requested) trong lúc đang quét -
+            phân biệt với list rỗng (quét xong, không tìm thấy PDF nào).
+        """
+        pdf_files: list[Path] = []
+        for root, _dirs, files in os.walk(self._input_folder):
+            if self._cancel_requested:
+                return None
+            for name in files:
+                if self._cancel_requested:
+                    return None
+                if name.lower().endswith(".pdf"):
+                    pdf_files.append(Path(root) / name)
+
+        return sorted(pdf_files)
+
     def process(self) -> None:
-        pdf_files = sorted(self._input_folder.rglob("*.pdf"))
+        pdf_files = self._discover_pdf_files()
+        if pdf_files is None:
+            self.cancelled.emit()
+            return
+
         total = len(pdf_files)
 
         start_time = time.time()

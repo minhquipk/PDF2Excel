@@ -5,6 +5,7 @@ from hashlib import sha256
 from json import dumps
 from collections.abc import Iterable
 from core.domain.enums import ConfidenceLevel, RuleCategory
+from core.domain.constants import PDFDetection
 from core.domain.models import (
     AnalysisContext,
     AnalysisMode,
@@ -23,23 +24,6 @@ class PDFDetector:
     or changes a KnowledgeRecord.  Its only input is the immutable model
     produced by ``PDFReader``.
     """
-
-    _DIGITAL_TEXT_PAGE_RATIO = 0.80
-    _DIGITAL_AVERAGE_TEXT_LENGTH = 20
-    _HYBRID_CONTENT_PAGE_RATIO = 0.25
-    _HIGH_EMPTY_PAGE_RATIO = 0.25
-    _DECISION_TIE_MARGIN = 0.10
-    _EVIDENCE_SCORE_SCALE = 1.40
-
-    # --- Document Rule / Graphics Rule (bổ sung, TDS §7.2 RC-001/RC-004) ---
-    # CHƯA qua thực nghiệm với dữ liệu thật (khác 5 rule Text/Image/
-    # Consistency/Quality/Layout đã verify trên PDF thật) - weight cố ý
-    # đặt thấp để không làm lệch các quyết định biên đã ổn định. Cần
-    # tinh chỉnh khi có dữ liệu thật, cùng nhóm "placeholder" với
-    # TemplateMatching.* (core/constants.py).
-    _DOCUMENT_RULE_WEIGHT = 0.20
-    _GRAPHICS_RULE_WEIGHT = 0.20
-    _GRAPHICS_DRAWING_PAGE_RATIO = 0.50
 
     # Từ khóa gợi ý phần mềm scan trong metadata PDF (Producer/Creator).
     # Danh sách dựa trên tri thức chung, CHƯA verify với PDF Scanned
@@ -184,14 +168,15 @@ class PDFDetector:
             self._evaluate_graphics_rule(context),
         )
 
-    def _evaluate_text_rule(self, context: AnalysisContext) -> Evidence:
+    @staticmethod
+    def _evaluate_text_rule(context: AnalysisContext) -> Evidence:
         metrics = {
             "text_page_ratio": context.text_page_ratio,
             "average_text_per_page": context.average_text_per_page,
         }
         if (
-            context.text_page_ratio >= self._DIGITAL_TEXT_PAGE_RATIO
-            and context.average_text_per_page >= self._DIGITAL_AVERAGE_TEXT_LENGTH
+            context.text_page_ratio >= PDFDetection.DIGITAL_TEXT_PAGE_RATIO
+            and context.average_text_per_page >= PDFDetection.DIGITAL_AVERAGE_TEXT_LENGTH
         ):
             return Evidence(
                 rule_name="text_coverage",
@@ -229,12 +214,13 @@ class PDFDetector:
             metrics=metrics,
         )
 
-    def _evaluate_image_rule(self, context: AnalysisContext) -> Evidence:
+    @staticmethod
+    def _evaluate_image_rule(context: AnalysisContext) -> Evidence:
         metrics = {
             "image_page_ratio": context.image_page_ratio,
             "total_image_count": context.total_image_count,
         }
-        if context.image_page_ratio >= self._DIGITAL_TEXT_PAGE_RATIO:
+        if context.image_page_ratio >= PDFDetection.DIGITAL_TEXT_PAGE_RATIO:
             if context.pages_with_text == 0:
                 return Evidence(
                     rule_name="image_coverage",
@@ -267,17 +253,18 @@ class PDFDetector:
             metrics=metrics,
         )
 
-    def _evaluate_mixed_content_rule(self, context: AnalysisContext) -> Evidence:
+    @staticmethod
+    def _evaluate_mixed_content_rule(context: AnalysisContext) -> Evidence:
         metrics = {
             "mixed_page_ratio": context.mixed_page_ratio,
             "text_page_ratio": context.text_page_ratio,
             "image_page_ratio": context.image_page_ratio,
         }
         if (
-            context.mixed_page_ratio >= self._HYBRID_CONTENT_PAGE_RATIO
+            context.mixed_page_ratio >= PDFDetection.HYBRID_CONTENT_PAGE_RATIO
             or (
-                context.text_page_ratio >= self._HYBRID_CONTENT_PAGE_RATIO
-                and context.image_page_ratio >= self._HYBRID_CONTENT_PAGE_RATIO
+                context.text_page_ratio >= PDFDetection.HYBRID_CONTENT_PAGE_RATIO
+                and context.image_page_ratio >= PDFDetection.HYBRID_CONTENT_PAGE_RATIO
             )
         ):
             return Evidence(
@@ -295,11 +282,12 @@ class PDFDetector:
             metrics=metrics,
         )
 
-    def _evaluate_quality_rule(self, context: AnalysisContext) -> Evidence:
+    @staticmethod
+    def _evaluate_quality_rule(context: AnalysisContext) -> Evidence:
         warnings: list[str] = []
         if context.page_count == 0:
             warnings.append("The document contains no pages.")
-        elif context.empty_page_ratio >= self._HIGH_EMPTY_PAGE_RATIO:
+        elif context.empty_page_ratio >= PDFDetection.HIGH_EMPTY_PAGE_RATIO:
             warnings.append("A substantial share of pages has no observable content.")
 
         return Evidence(
@@ -350,7 +338,7 @@ class PDFDetector:
             return Evidence(
                 rule_name="document_metadata",
                 category=RuleCategory.DOCUMENT,
-                supports={AnalysisMode.SCANNED: self._DOCUMENT_RULE_WEIGHT},
+                supports={AnalysisMode.SCANNED: PDFDetection.DOCUMENT_RULE_WEIGHT},
                 reason="Document metadata (Producer/Creator) references scanning software.",
                 warnings=(
                     "Metadata-based signal is weak and easily spoofed or "
@@ -366,7 +354,8 @@ class PDFDetector:
             metrics=metrics,
         )
 
-    def _evaluate_graphics_rule(self, context: AnalysisContext) -> Evidence:
+    @staticmethod
+    def _evaluate_graphics_rule(context: AnalysisContext) -> Evidence:
         """RC-004 (TDS §7.2): đánh giá đối tượng đồ họa/vector.
 
         Tín hiệu duy nhất: mật độ vector drawing operations
@@ -381,11 +370,11 @@ class PDFDetector:
             "drawing_page_ratio": context.drawing_page_ratio,
             "total_drawing_count": context.total_drawing_count,
         }
-        if context.drawing_page_ratio >= self._GRAPHICS_DRAWING_PAGE_RATIO:
+        if context.drawing_page_ratio >= PDFDetection.GRAPHICS_DRAWING_PAGE_RATIO:
             return Evidence(
                 rule_name="vector_graphics_coverage",
                 category=RuleCategory.GRAPHICS,
-                supports={AnalysisMode.DIGITAL: self._GRAPHICS_RULE_WEIGHT},
+                supports={AnalysisMode.DIGITAL: PDFDetection.GRAPHICS_RULE_WEIGHT},
                 reason="Vector drawing operations occur on most pages, consistent with software-generated content.",
                 warnings=(
                     "Vector graphics can also appear on annotated scans; "
@@ -401,8 +390,8 @@ class PDFDetector:
             metrics=metrics,
         )
 
+    @staticmethod
     def _decide_mode(
-        self,
         evidence: tuple[Evidence, ...],
     ) -> tuple[AnalysisMode, dict[AnalysisMode, float]]:
         """Resolve all evidence together; no individual rule makes a decision."""
@@ -421,7 +410,7 @@ class PDFDetector:
         runner_up_score = ranked[1][1]
         if (
             leading_score == 0
-            or leading_score - runner_up_score < self._DECISION_TIE_MARGIN
+            or leading_score - runner_up_score < PDFDetection.DECISION_TIE_MARGIN
         ):
             return AnalysisMode.UNKNOWN, scores
 
@@ -441,7 +430,7 @@ class PDFDetector:
         selected_score = support_scores.get(mode, 0.0)
         total_score = sum(support_scores.values())
 
-        evidence_strength = self._clamp(selected_score / self._EVIDENCE_SCORE_SCALE)
+        evidence_strength = self._clamp(selected_score / PDFDetection.EVIDENCE_SCORE_SCALE)
         consistency = self._clamp(selected_score / total_score) if total_score else 0.0
         observed_page_ratio = max(
             context.text_page_ratio,
