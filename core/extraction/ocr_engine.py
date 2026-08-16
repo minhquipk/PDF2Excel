@@ -47,7 +47,11 @@ class OCREngine:
     def __init__(self) -> None:
         # Cấu hình Tesseract dựng 1 lần, tái sử dụng cho mọi lần gọi
         # recognize() - không đổi giữa các trang/PDF trong cùng batch.
-        self._config = f'--tessdata-dir "{TESSDATA_DIR}" --psm {OCR.PSM} --oem {OCR.OEM}'
+        self._config = (
+            f'--tessdata-dir "{TESSDATA_DIR}" --psm {OCR.PSM} --oem {OCR.OEM} '
+            '-c load_system_dawg=0 -c load_freq_dawg=0 -c load_punc_dawg=0 '
+            '-c textord_heavy_nr=1 -c classify_enable_learning=0'
+        )
         self._traineddata_checked = False
 
     def _ensure_traineddata(self) -> None:
@@ -116,6 +120,52 @@ class OCREngine:
             words.append((left, top, left + width, top + height, text, confidence / 100.0))
 
         return tuple(words)
+
+    def recognize_numeric_roi(
+            self,
+            page_image: PageImage,
+            normalized_bbox: tuple[float, float, float, float],
+    ) -> str:
+        """Re-OCR 1 vùng số (ROI) với cấu hình chuyên biệt (Pass 2, ADR mới).
+
+        Nhận bbox chuẩn hóa [0.0, 1.0] (cùng hệ tọa độ WordToken.normalized_bbox),
+        trả về text thô (chưa qua ValueConverter). Không dùng chung self._config
+        (Pass 1) - Pass 2 cần whitelist + PSM riêng biệt cho dòng đơn.
+        """
+        self._ensure_traineddata()
+
+        image = self._to_numpy_array(page_image)
+        roi = self._crop_roi(image, normalized_bbox, page_image.width, page_image.height)
+        roi = cv2.resize(
+            roi, (0, 0),
+            fx=OCR.ROI_UPSCALE_FACTOR, fy=OCR.ROI_UPSCALE_FACTOR,
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+        whitelist = OCR.ROI_CHAR_WHITELIST.get(OCR.LANG, OCR.ROI_CHAR_WHITELIST["vie"])
+        config = (
+            f'--tessdata-dir "{TESSDATA_DIR}" --psm 7 --oem 3 '
+            f'-c tessedit_char_whitelist={whitelist} '
+            '-c load_system_dawg=0 -c load_freq_dawg=0 -c load_punc_dawg=0'
+        )
+
+        text = pytesseract.image_to_string(Image.fromarray(roi), lang=OCR.LANG, config=config)
+        return text.strip()
+
+    @staticmethod
+    def _crop_roi(
+            image: np.ndarray,
+            normalized_bbox: tuple[float, float, float, float],
+            width: int,
+            height: int,
+    ) -> np.ndarray:
+        """Cắt vùng ROI từ ảnh trang, có padding an toàn (Mục 4.2.A)."""
+        x0, y0, x1, y1 = normalized_bbox
+        px0 = max(0, int((x0 - OCR.ROI_PADDING_X) * width))
+        px1 = min(width, int((x1 + OCR.ROI_PADDING_X) * width) + 1)
+        py0 = max(0, int((y0 - OCR.ROI_PADDING_Y) * height))
+        py1 = min(height, int((y1 + OCR.ROI_PADDING_Y) * height) + 1)
+        return image[py0:py1, px0:px1]
 
     @staticmethod
     def _to_numpy_array(page_image: PageImage) -> np.ndarray:

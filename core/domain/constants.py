@@ -118,6 +118,24 @@ class OCR:
     # vì cải thiện - cần tăng dần qua thực nghiệm, không bắt đầu cao.
     PREPROCESS_SHARPEN_AMOUNT = 0.3
 
+    # --- Median Denoising (Tầng 1, Global Pass) ---
+    PREPROCESS_MEDIAN_KERNEL = 3
+
+    # --- Two-Pass ROI OCR (Tầng 2, chỉ áp dụng ValueType.DECIMAL) ---
+    ROI_UPSCALE_FACTOR = 2.0
+    ROI_PADDING_X = 0.02
+    ROI_PADDING_Y = 0.01
+
+    # Whitelist ký tự cho Pass 2 (ROI số), theo TỪNG ngôn ngữ - khóa khớp
+    # OCR.LANG (mã tessdata, "vie"/"eng"...). "vie" cần thêm đ/Đ (hậu tố
+    # VNĐ, xem ValueConverter._strip_currency_suffix - ADR-051); "eng"
+    # không cần vì không có hậu tố tiền tệ dạng chữ dính liền số tương tự.
+    # Chuẩn bị sẵn cấu trúc cho việc chọn ngôn ngữ ở UI (v2, xem OCR.LANG).
+    ROI_CHAR_WHITELIST = {
+        "vie": "0123456789.,%+-đĐVND₫vnd",
+        "eng": "0123456789.,%+-",
+    }
+
 
 class Progress:
     """Cấu hình hiển thị tiến trình."""

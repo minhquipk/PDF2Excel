@@ -25,6 +25,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from rapidfuzz import fuzz
+from core.extraction.ocr_engine import OCREngine
 from core.domain.constants import TemplateMatching
 from core.domain.enums import SpatialDirection, ValueType
 from core.domain.models import (
@@ -70,6 +71,7 @@ class TemplateMatcher:
     def __init__(self, templates: tuple[TemplateDefinition, ...]) -> None:
         self._templates = templates
         self._pattern_cache: dict[str, re.Pattern] = {}
+        self._ocr_engine = OCREngine()  # mới - phục vụ Two-Pass ROI (Bước 3)
 
     # ------------------------------------------------------------------
     # Public API
@@ -131,7 +133,9 @@ class TemplateMatcher:
 
             window = self._build_window(key_token, field_def.spatial_relation)
             candidates = self._tokens_in_window(page_words, window)
-            value = self._select_best_value(candidates, field_def, key_token)
+            value = self._extract_field_value(  # đổi tên + thêm 2 tham số
+                candidates, field_def, key_token, extraction, page_index
+            )
             results[field_def.field_name] = value
 
         return results
@@ -405,13 +409,17 @@ class TemplateMatcher:
             self._pattern_cache[pattern] = compiled
         return compiled
 
-    def _select_best_value(
-        self,
-        candidates: list[WordToken],
-        field_def: FieldDefinition,
-        key_token: WordToken,
+    def _extract_field_value(
+            self,
+            candidates: list[WordToken],
+            field_def: FieldDefinition,
+            key_token: WordToken,
+            extraction: ExtractionResult,
+            page_index: int,
     ) -> str | None:
-        """Lọc candidate khớp value_pattern, tie-break bằng khoảng cách gần Key nhất."""
+        """Lọc candidate khớp value_pattern, tie-break bằng khoảng cách gần Key
+        nhất. Đổi tên từ _select_best_value() - nay nhận thêm extraction/page_index
+        để field DECIMAL có thể kích hoạt Two-Pass ROI (_resolve_decimal_value)."""
         pattern = self._get_compiled_pattern(field_def.value_pattern)
         matches = [token for token in candidates if pattern.match(token.text)]
         if not matches:
@@ -420,9 +428,44 @@ class TemplateMatcher:
         anchor = min(matches, key=lambda t: TemplateMatcher._distance(t, key_token))
 
         if field_def.value_type is not ValueType.TEXT:
-            return anchor.text
+            return self._resolve_decimal_value(anchor, field_def, extraction, page_index)
 
         return self._merge_same_line(anchor, candidates)
+
+    def _resolve_decimal_value(
+            self,
+            anchor: WordToken,
+            field_def: FieldDefinition,
+            extraction: ExtractionResult,
+            page_index: int,
+    ) -> str:
+        """Pass 1 (anchor.text) là giá trị mặc định/fallback cho MỌI field không
+        phải Text (DECIMAL và DATE đều đi qua đây). Pass 2 (ROI re-OCR) chỉ kích
+        hoạt khi field là DECIMAL và anchor có nguồn OCR (WordToken.source ==
+        "ocr") - đúng phạm vi OCR_ACCURACY_SPECIFICATION.md: triệt tiêu nhầm lẫn
+        ',' <-> '.' trên dữ liệu kế toán quét ảnh, không đụng PDF Digital
+        (source="digital" không bao giờ kích hoạt) hay field Date.
+
+        Fail-soft tuyệt đối (đối xứng ADR-032/033 - 1 field lỗi không được làm
+        hỏng cả PDF): thiếu page_image, hoặc recognize_numeric_roi() raise bất
+        kỳ lỗi gì (kể cả FileNotFoundError từ _ensure_traineddata) đều fallback
+        về Pass 1, không propagate lên Parser/Worker.
+        """
+        if field_def.value_type is not ValueType.DECIMAL or anchor.source != "ocr":
+            return anchor.text
+
+        page_image = extraction.page_images.get(page_index)
+        if page_image is None:
+            return anchor.text
+
+        try:
+            roi_text = self._ocr_engine.recognize_numeric_roi(
+                page_image, anchor.normalized_bbox
+            )
+        except Exception:
+            return anchor.text
+
+        return roi_text or anchor.text
 
     @staticmethod
     def _merge_same_line(anchor: WordToken, candidates: list[WordToken]) -> str:
