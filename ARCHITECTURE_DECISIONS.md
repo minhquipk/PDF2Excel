@@ -85,6 +85,11 @@ quyết định cuối cùng và lý do kỹ thuật của nó.
 | ADR-067 | Worker v2.0: xử lý đa luồng qua QThreadPool, mô hình event-driven | Accepted |
 | ADR-068 | Sửa lỗi treo khi Stop batch lớn — đảm bảo mọi `PDFTaskRunnable.run()` luôn emit đúng 1 signal | Accepted |
 | ADR-069 | High-DPI Scaling Policy — `PassThrough` cho Windows scale lẻ (125%/150%) | Accepted |
+| ADR-070 | Two-Pass ROI OCR cho field DECIMAL nguồn OCR (`TemplateMatcher` tự sở hữu `OCREngine`) | Accepted |
+| ADR-071 | Validate `roi_text` theo `value_pattern` trước khi chấp nhận Pass 2 | Accepted |
+| ADR-072 | `recognize_numeric_roi()` phải deskew trước khi crop | Accepted |
+| ADR-073 | ROI padding tính theo tỉ lệ chiều cao bbox (`ROI_PADDING_RATIO`), không theo kích thước trang | Accepted (đang tinh chỉnh giá trị) |
+| ADR-074 | Bác bỏ cấu hình tắt DAWG/`textord_heavy_nr` cho Global Pass (Mục 4.1.C spec) | Accepted |
 
 ------------------------------------------------------------------------
 
@@ -1965,3 +1970,234 @@ người dùng tự kiểm tra và xác nhận (đặc biệt `QTableView` — P
 Table) trước khi coi nguyên tắc 5 là hoàn toàn đóng.
 
 Xác nhận trong implementation: `main.py`.
+
+------------------------------------------------------------------------
+
+## ADR-070 --- Two-Pass ROI OCR Cho Field DECIMAL Nguồn OCR
+
+**Status:** Accepted
+
+Triển khai `OCR_ACCURACY_SPECIFICATION.md`: `TemplateMatcher` tự sở hữu 1
+instance `OCREngine` riêng (`self._ocr_engine = OCREngine()` trong
+`__init__`), thay vì chia sẻ instance với `Extractor` (Option B trong 2
+phương án đã cân nhắc).
+
+**Lý do chọn Option B (không chia sẻ instance với `Extractor`):**
+`OCREngine.__init__()` không giữ tài nguyên nặng (không load model vào
+tiến trình - Tesseract chạy qua subprocess mỗi lần gọi, xem ADR-047 "Hệ
+quả kiến trúc quan trọng"), chỉ tốn vài trăm byte (1 chuỗi config + 1
+bool). `TemplateMatcher` chỉ được khởi tạo đúng 1 lần trong
+`Worker.__init__()` (không phải per-thread/per-task), nên chi phí Option
+B là O(1) cố định, KHÔNG scale theo `thread_count` hay số PDF trong batch
+- xác nhận qua phân tích kiến trúc `QThreadPool`/`PDFTaskRunnable`
+(ADR-067): mọi task chia sẻ đúng 1 `TemplateMatcher` instance của
+`Worker`. Đổi lại, tránh phải sửa `Extractor.__init__()`/`Worker.__init__()`
+(phạm vi thay đổi hẹp hơn, đúng Rule 2).
+
+`_resolve_decimal_value()` (mới, trong `TemplateMatcher`) quyết định kích
+hoạt Pass 2 khi: `field_def.value_type is ValueType.DECIMAL` VÀ
+`anchor.source == "ocr"` - không đụng PDF Digital (`source="digital"`
+không bao giờ kích hoạt) hay field DATE. Fail-soft tuyệt đối (đối xứng
+ADR-032/033): `page_image` thiếu, hoặc `recognize_numeric_roi()` raise
+bất kỳ lỗi gì -> fallback về `anchor.text` (Pass 1), không propagate lên
+Parser/Worker.
+
+Xác nhận trong implementation: `core/parsing/template/template_matcher.py::TemplateMatcher.__init__()`,
+`_extract_field_value()` (đổi tên từ `_select_best_value()`),
+`_resolve_decimal_value()`; `core/extraction/ocr_engine.py::OCREngine.recognize_numeric_roi()`,
+`_crop_roi()`.
+
+------------------------------------------------------------------------
+
+## ADR-071 --- Validate `roi_text` Theo `value_pattern` Trước Khi Chấp Nhận Pass 2
+
+**Status:** Accepted
+
+**Phát hiện qua debug thực nghiệm (không phải suy đoán trước):** sau khi
+triển khai ADR-070, batch test thật xuất hiện regression nghiêm trọng -
+nhiều field DECIMAL nguồn OCR trả về `None` (biểu hiện: ô Excel trống +
+`Report.txt` ghi `field=None`) dù trước đó (baseline, chưa có Two-Pass)
+hoạt động bình thường.
+
+**Quá trình chẩn đoán (3 giả thuyết bị loại trừ bằng thực nghiệm thật
+trước khi tìm đúng nguyên nhân):**
+1. Giả thuyết sai lệch hệ tọa độ do thiếu deskew trong `recognize_numeric_roi()`
+   - sửa (xem ADR-072) nhưng KHÔNG giải quyết được regression `None`.
+2. Giả thuyết cấu hình Global Pass (`self._config`, DAWG-disable +
+   `textord_heavy_nr`) làm hỏng token số ở Pass 1 - revert tạm để test,
+   KHÔNG giải quyết được regression `None` (nhưng phát hiện phụ quan
+   trọng, xem ADR-074).
+3. Xác nhận đúng nguyên nhân qua thực nghiệm cô lập: tắt hẳn Pass 2
+   (bypass `_resolve_decimal_value()`, chỉ dùng `anchor.text`) khôi phục
+   đúng kết quả - xác nhận vấn đề nằm trong chính logic quyết định của
+   Pass 2, không phải Pass 1/deskew.
+
+**Nguyên nhân gốc:** `_resolve_decimal_value()` (bản gốc) chấp nhận
+`roi_text` **vô điều kiện** nếu không rỗng
+(`return roi_text or anchor.text`) - không có bước validate. Pass 2 (PSM=7,
+context hẹp hơn Pass 1 nhiều) có xu hướng trả về chuỗi không rỗng nhưng
+KHÔNG hợp lệ (VD lẫn ký tự thừa từ nội dung liền kề - xem ADR-073), ghi
+đè lên `anchor.text` vốn đúng. Chuỗi rác này lọt qua `TemplateMatcher`
+(không validate), tới `ValueConverter._to_decimal()` - theo đúng ADR-032
+("convert lỗi -> field = None, không raise"), `Decimal()` không parse
+được chuỗi rác nên trả `None`. Từ góc nhìn Report.txt, hiện tượng này
+KHÔNG phân biệt được với "field không tìm thấy" - dễ gây hiểu nhầm là
+lỗi ở tầng khác.
+
+**Giải pháp:** `_resolve_decimal_value()` validate `roi_text` bằng chính
+`field_def.value_pattern` (tái dùng `_get_compiled_pattern()` đã có sẵn
+cho Pass 1 Value Matching - không thêm logic mới) trước khi chấp nhận.
+Nếu `roi_text` không khớp pattern -> coi Pass 2 không đáng tin, fallback
+về `anchor.text`.
+
+**Giới hạn đã biết (chưa giải quyết, phát hiện qua case `vat_amount` cụ
+thể - anchor sai `933.038`, roi đúng giá trị nhưng dư ký tự `933,038V`):**
+validate theo `value_pattern` chỉ phát hiện được rác SAI CẤU TRÚC, KHÔNG
+phát hiện được lỗi "đúng cấu trúc nhưng sai giá trị" (VD đọc nhầm `,`/`.`
+mà chuỗi kết quả vẫn khớp `^[0-9.,]+...$`) - value_pattern hiện tại chấp
+nhận cả 2 loại dấu. Đây là động lực trực tiếp dẫn tới ADR-073.
+
+Xác nhận trong implementation:
+`core/parsing/template/template_matcher.py::TemplateMatcher._resolve_decimal_value()`.
+
+------------------------------------------------------------------------
+
+## ADR-072 --- `recognize_numeric_roi()` Phải Deskew Trước Khi Crop
+
+**Status:** Accepted
+
+`WordToken.normalized_bbox` của mọi token nguồn OCR được `Extractor`
+tính từ tọa độ pixel SAU khi `recognize()` (Pass 1) đã deskew nội bộ -
+tức mô tả vị trí trên ảnh ĐÃ XOAY THẲNG. `page_image.samples` (lưu
+trong `ExtractionResult.page_images`) là ảnh GỐC, CHƯA XOAY (theo
+ADR-026/048 - Reader chỉ đọc thô). `recognize_numeric_roi()` (Pass 2)
+bản đầu tiên cắt trực tiếp từ `page_image` chưa xoay bằng bbox đã tính
+trong hệ tọa độ đã xoay - sai lệch hệ tọa độ có thật với mọi trang có độ
+nghiêng >= `OCR.DESKEW_MIN_ANGLE` (0.5°).
+
+**Lưu ý quan trọng:** thực nghiệm xác nhận đây KHÔNG phải nguyên nhân
+của regression `None` hàng loạt (xem ADR-071) - fix này độc lập, giải
+quyết đúng 1 lớp lỗi khác (misalignment khi trang nghiêng), không được
+phép revert dù không phải nguyên nhân chính đang debug tại thời điểm đó.
+
+**Giải pháp:** gọi lại `self._deskew(image)` (cùng hàm tất định, thuần
+túy dùng bởi `recognize()`) ngay sau `_to_numpy_array()`, trước khi cắt
+ROI - tái tạo chính xác cùng ảnh đã xoay dùng ở Pass 1, đảm bảo
+`normalized_bbox` khớp đúng hệ tọa độ.
+
+Xác nhận trong implementation:
+`core/extraction/ocr_engine.py::OCREngine.recognize_numeric_roi()`.
+
+------------------------------------------------------------------------
+
+## ADR-073 --- ROI Padding Tính Theo Tỉ Lệ Chiều Cao Bbox, Không Theo Trang
+
+**Status:** Accepted (giá trị `ROI_PADDING_RATIO` đang trong quá trình
+tinh chỉnh - xem SESSION_SUMMARIES.md, chưa freeze giá trị cuối)
+
+**Phát hiện qua debug log trực tiếp** (in `anchor.text`/`roi_text` trước
+khi validate, trên 1 PDF cụ thể có 4 field DECIMAL): TOÀN BỘ 4/4
+`roi_text` đều dư thêm ký tự (thường là mảnh đầu ký hiệu tiền tệ "V")
+so với `anchor.text` đúng - mẫu lặp lại có hệ thống, không ngẫu nhiên.
+
+**Nguyên nhân:** thiết kế gốc (`ROI_PADDING_X`/`ROI_PADDING_Y`, theo
+Mục 4.2.A của `OCR_ACCURACY_SPECIFICATION.md`) tính padding theo TỈ LỆ
+KÍCH THƯỚC TRANG (VD ở DPI 450/A4, `ROI_PADDING_X=0.02` => ~74px mỗi
+bên) - hằng số tuyệt đối này KHÔNG tương quan với kích thước của chính
+token đang cắt. Với field ngắn (VD `"10%"`, 3 ký tự), 74px padding là tỉ
+lệ rất lớn so với chính bbox của nó -> tràn sang cột/nhãn liền kề trong
+bảng chi tiết thanh toán (subtotal/vat_rate/vat_amount/total_amount
+thường nằm sát nhau) - khớp đúng quan sát: field ngắn nhất (`vat_rate`)
+là field DUY NHẤT vẫn sai xuyên suốt nhiều mức padding đã thử.
+
+**Bác bỏ 1 phần lý giải sai ban đầu:** phát sinh trong thảo luận - nghi
+ngờ vấn đề "phụ thuộc DPI". Xác nhận qua suy diễn toán học: cả 2 công
+thức (theo trang lẫn theo bbox.height) đều tỉ lệ thuận với DPI đúng cách
+(vì `bbox_height_px = normalized_height x page_height_px`, và
+`page_height_px` tỉ lệ thuận DPI) - vấn đề thật KHÔNG phải "DPI", mà là
+"kích thước token so với kích thước trang" (số ký tự khác nhau -> bbox
+width khác nhau -> padding cố định theo trang chiếm tỉ lệ khác nhau).
+
+**Giải pháp:** thay `ROI_PADDING_X`/`ROI_PADDING_Y` (2 hằng số theo
+trang) bằng 1 hằng số `ROI_PADDING_RATIO` duy nhất, tính padding pixel
+theo TỈ LỆ CHIỀU CAO BBOX (đại diện cỡ chữ/font size - ổn định giữa các
+field cùng template, không phụ thuộc số ký tự):
+
+```python
+bbox_height_px = (y1 - y0) * page_height_px
+pad_px = max(1, int(bbox_height_px * ROI_PADDING_RATIO))
+```
+
+Thiết kế này TỰ ĐỘNG bất biến theo DPI (đã chứng minh toán học - padding
+vật lý tuyệt đối tăng đúng theo tỉ lệ DPI mà không cần code biết DPI cụ
+thể là bao nhiêu) - quan trọng cho kế hoạch v2.0 "DPI thích ứng theo khổ
+giấy" (xem PROJECT_CONTEXT.md §18, ADR-053).
+
+**Quá trình tinh chỉnh thực nghiệm** (dò dần theo giá trị cũ, quy đổi
+sang giá trị mới): `0.02 -> 0.005 -> 0.003 -> 0.002 -> 0.001 -> 0.0007-0.0004`
+(theo trang) tương ứng khoảng `ROI_PADDING_RATIO ~ 0.06-0.08` (theo
+bbox.height) cho kết quả đúng trên case debug ban đầu (4/4 field khớp
+`anchor.text` đã xác nhận là giá trị thật). Chọn điểm giữa `0.07` để
+tiếp tục thực nghiệm trên batch lớn hơn.
+
+**CHƯA ĐÓNG:** chạy lại trên toàn bộ 18 PDF `high_noise` với
+`ROI_PADDING_RATIO=0.07` cho kết quả 71/72 - nhưng field sai đã CHUYỂN
+SANG PDF KHÁC so với lần chạy baseline (trước Two-Pass). Tình huống phức
+tạp hơn dự kiến ban đầu - việc tinh chỉnh giá trị cuối cùng, và tìm hiểu
+nguyên nhân "field sai di chuyển giữa các PDF", được dời sang phiên làm
+việc riêng.
+
+Xác nhận trong implementation:
+`core/domain/constants.py::OCR.ROI_PADDING_RATIO`,
+`core/extraction/ocr_engine.py::OCREngine._crop_roi()`.
+
+**Nợ kỹ thuật cần xử lý ở phiên sau:** `tests/core/extraction/test_ocr_engine.py::TestCropRoi`
+hiện viết theo công thức CŨ (`ROI_PADDING_X`/`Y` theo trang) - đã LỖI
+THỜI, cần viết lại theo công thức mới sau khi `ROI_PADDING_RATIO` được
+chốt giá trị cuối.
+
+------------------------------------------------------------------------
+
+## ADR-074 --- Bác Bỏ Cấu Hình Tắt DAWG/`textord_heavy_nr` Cho Global Pass
+
+**Status:** Accepted
+
+`OCR_ACCURACY_SPECIFICATION.md` Mục 4.1.C đề xuất tắt DAWG
+(`load_system_dawg`/`load_freq_dawg`/`load_punc_dawg`) và bật
+`textord_heavy_nr=1`/`classify_enable_learning=0` cho cấu hình Tesseract
+TOÀN TRANG (`self._config` trong `OCREngine.__init__()`, dùng bởi
+`recognize()` - Pass 1).
+
+**Kiểm chứng thực nghiệm A/B trên tập `high_noise`** (18 PDF, 72 field
+DECIMAL, cùng bộ dữ liệu, chỉ đổi đúng 1 biến số):
+
+| Cấu hình | None | Sai dấu `,`/`.` |
+|---|---|---|
+| Baseline (không DAWG-disable/textord) | 0 | 1 |
+| Áp dụng Mục 4.1.C (DAWG-disable + textord toàn trang) | 2 | 1 |
+
+**Kết luận:** áp dụng đề xuất Mục 4.1.C gây HỒI QUY (2 field mất khả
+năng đọc hoàn toàn) mà KHÔNG mang lại lợi ích đo được (số case sai dấu
+không đổi). Quyết định: BÁC BỎ phần đề xuất này của spec cho pipeline
+hiện tại, dựa trên bằng chứng thực nghiệm trực tiếp trên dữ liệu thật -
+đối xứng cách dự án đã bác bỏ đề xuất Binarization tại Session
+2026-08-13 (rủi ro lý thuyết không đủ, cần bằng chứng thực nghiệm).
+
+**Giả thuyết kỹ thuật cho nguyên nhân hồi quy (chưa verify sâu, ghi nhận
+để tham khảo):** tắt DAWG/bật `textord_heavy_nr` cho TOÀN TRANG có thể
+khiến Pass 1 không tìm được BẤT KỲ token nào khớp `value_pattern` ở 1 số
+field (regex match rỗng ngay từ bước tìm candidate, TRƯỚC KHI `anchor`
+được xác lập) - lúc đó Pass 2 không có cơ hội chạy vì cần `anchor` làm
+điểm neo. Cấu hình riêng của Pass 2 (`recognize_numeric_roi()`, đã có
+sẵn DAWG-disable ở phạm vi HẸP - chỉ ROI số) đã đảm nhiệm đủ tốt lợi ích
+"giảm thiên kiến từ điển" mà Mục 4.1.C nhắm tới, không cần áp cho toàn
+trang.
+
+**Quyết định:** `self._config` (Pass 1, `OCREngine.__init__()`) GIỮ
+NGUYÊN baseline gốc (chỉ `--tessdata-dir --psm --oem`, không có cờ DAWG/
+textord/classify-learning). `PREPROCESS_SHARPEN_SIGMA`/`AMOUNT` (Mục
+4.1.B) và Median Blur (Mục 4.1.A) của spec - CHƯA thực nghiệm, dời sang
+phiên sau (xem PROJECT_CONTEXT.md §15).
+
+Xác nhận trong implementation: `core/extraction/ocr_engine.py::OCREngine.__init__()`
+(không đổi so với trước khi triển khai `OCR_ACCURACY_SPECIFICATION.md`).

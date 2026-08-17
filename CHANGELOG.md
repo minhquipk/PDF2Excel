@@ -604,3 +604,75 @@ Verify trực quan High-DPI trên Windows thật ở scale 125%/150%
 (ADR-069) — chưa có xác nhận từ người dùng.
 
 Lộ trình `MULTI_THREAD_SPECIFICATION.md` (5 bước) — **HOÀN TẤT**.
+
+------------------------------------------------------------------------
+
+## 2026-08-17 — Triển khai OCR_ACCURACY_SPECIFICATION.md: Two-Pass ROI OCR (chưa đóng, còn tiếp tục)
+
+### Added
+- `core/domain/constants.py::OCR`: thêm `PREPROCESS_MEDIAN_KERNEL`
+  (CHƯA wire vào `_preprocess()` - xem Cancelled/Deferred),
+  `ROI_UPSCALE_FACTOR`, `ROI_PADDING_RATIO` (thay `ROI_PADDING_X`/
+  `ROI_PADDING_Y` sau khi phát hiện lỗi thiết kế - xem ADR-073),
+  `ROI_CHAR_WHITELIST` (dict theo ngôn ngữ `vie`/`eng`, `vie` gồm
+  `đĐVND₫vnd`).
+- `core/extraction/ocr_engine.py::OCREngine`: thêm `recognize_numeric_roi()`
+  (Pass 2, ADR-070), `_crop_roi()` (ADR-073, công thức theo
+  `bbox.height`, không theo trang).
+- `core/parsing/template/template_matcher.py::TemplateMatcher`: thêm
+  `self._ocr_engine` (ADR-070), `_resolve_decimal_value()` (ADR-071,
+  validate `roi_text` theo `value_pattern`).
+- `tests/core/extraction/test_ocr_engine.py` (file mới): `TestCropRoi`
+  (4 case, **LỖI THỜI** - viết theo công thức padding CŨ, cần viết lại
+  theo ADR-073), `TestRecognizeNumericRoi` (5 case, mock `pytesseract`).
+
+### Changed
+- `core/parsing/template/template_matcher.py`: `_select_best_value()`
+  đổi tên thành `_extract_field_value()`, tách logic Two-Pass ra
+  `_resolve_decimal_value()`. `extract_fields()` cập nhật lời gọi tương
+  ứng.
+
+### Fixed
+- `core/extraction/ocr_engine.py::recognize_numeric_roi()`: thêm bước
+  `_deskew()` trước khi crop ROI - sửa sai lệch hệ tọa độ khi trang
+  nghiêng. Xem ADR-072.
+- `core/parsing/template/template_matcher.py::_resolve_decimal_value()`:
+  thêm validate `roi_text` theo `value_pattern` trước khi chấp nhận -
+  sửa regression nghiêm trọng (field DECIMAL nguồn OCR trả `None` hàng
+  loạt). Đây là NGUYÊN NHÂN GỐC thật sự của bug đã debug xuyên suốt
+  phiên này. Xem ADR-071.
+
+### Cancelled / Deferred (đã thử, quyết định không áp dụng hoặc dời lại)
+- Cấu hình tắt DAWG/`textord_heavy_nr` cho Global Pass (Mục 4.1.C của
+  spec) - kiểm chứng A/B trên `high_noise` (18 PDF), BÁC BỎ do gây hồi
+  quy (2/72 field None) không kèm lợi ích đo được. Xem ADR-074.
+- `PREPROCESS_SHARPEN_SIGMA`/`AMOUNT` (Mục 4.1.B) - giữ nguyên
+  `1.0`/`0.3`, chưa thực nghiệm đổi theo spec (`0.6`/`0.4`) - dời sang
+  phiên sau.
+- Median Blur (Mục 4.1.A) - hằng số đã khai báo nhưng CHƯA gọi
+  `cv2.medianBlur()` trong `_preprocess()` - dời sang phiên sau.
+
+### Testing
+Chẩn đoán qua 3 vòng thực nghiệm cô lập biến số (deskew, cấu hình Pass 1,
+tắt hẳn Pass 2) trước khi xác định đúng nguyên nhân gốc (thiếu validate
+- ADR-071). Sau đó phát hiện + sửa lỗi padding (ADR-073) qua debug log
+trực tiếp `anchor.text`/`roi_text` trên 1 PDF cụ thể, dò giá trị
+`ROI_PADDING_RATIO` qua 6 mức thử. Chạy lại toàn bộ batch `high_noise`
+(18 PDF, 72 field DECIMAL) với `ROI_PADDING_RATIO=0.07`: kết quả 71/72 -
+**CHƯA ĐÓNG**, field sai đã chuyển sang PDF khác so với baseline, cần
+điều tra thêm ở phiên riêng.
+
+**Tiêu chí nghiệm thu CHƯA đạt (xem OCR_ACCURACY_SPECIFICATION.md Mục
+7):** #1 Accuracy (chưa 100%, còn 1/72 sai), #3 Performance (<50ms/trang,
+chưa đo), #4 Memory (chưa đo). #2 Zero Regression đã đạt (toàn bộ
+`pytest -v` PASS, riêng `TestCropRoi` cần viết lại nên sẽ fail nếu chạy
+với công thức mới - xem Known Issues).
+
+### Known Issues mới (chưa sửa - xem PROJECT_CONTEXT.md §14)
+- `tests/core/extraction/test_ocr_engine.py::TestCropRoi` lỗi thời sau
+  ADR-073, cần viết lại.
+- `ROI_PADDING_RATIO` chưa chốt giá trị cuối - đang `0.07`, cần tiếp tục
+  tinh chỉnh ở phiên riêng.
+- Field sai còn lại (1/72 trên `high_noise`) di chuyển giữa các PDF khi
+  đổi padding - gợi ý nguyên nhân có thể không đồng nhất giữa các PDF
+  (font/chất lượng scan khác nhau), cần điều tra sâu hơn.

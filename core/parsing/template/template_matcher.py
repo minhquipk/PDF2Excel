@@ -439,18 +439,7 @@ class TemplateMatcher:
             extraction: ExtractionResult,
             page_index: int,
     ) -> str:
-        """Pass 1 (anchor.text) là giá trị mặc định/fallback cho MỌI field không
-        phải Text (DECIMAL và DATE đều đi qua đây). Pass 2 (ROI re-OCR) chỉ kích
-        hoạt khi field là DECIMAL và anchor có nguồn OCR (WordToken.source ==
-        "ocr") - đúng phạm vi OCR_ACCURACY_SPECIFICATION.md: triệt tiêu nhầm lẫn
-        ',' <-> '.' trên dữ liệu kế toán quét ảnh, không đụng PDF Digital
-        (source="digital" không bao giờ kích hoạt) hay field Date.
-
-        Fail-soft tuyệt đối (đối xứng ADR-032/033 - 1 field lỗi không được làm
-        hỏng cả PDF): thiếu page_image, hoặc recognize_numeric_roi() raise bất
-        kỳ lỗi gì (kể cả FileNotFoundError từ _ensure_traineddata) đều fallback
-        về Pass 1, không propagate lên Parser/Worker.
-        """
+        """..."""
         if field_def.value_type is not ValueType.DECIMAL or anchor.source != "ocr":
             return anchor.text
 
@@ -465,7 +454,19 @@ class TemplateMatcher:
         except Exception:
             return anchor.text
 
-        return roi_text or anchor.text
+        if not roi_text:
+            return anchor.text
+
+        # MỚI - validate roi_text khớp value_pattern trước khi tin tưởng Pass 2.
+        # Nếu không, Pass 2 (context hẹp hơn Pass 1) có thể trả về rác không rỗng,
+        # ghi đè lên anchor.text vốn đúng - hậu quả không lộ ra thành lỗi ở đây mà
+        # âm thầm khiến ValueConverter._to_decimal() thất bại phía sau (ADR-032),
+        # biểu hiện thành field = None dù Pass 1 đã tìm đúng giá trị.
+        pattern = self._get_compiled_pattern(field_def.value_pattern)
+        if not pattern.match(roi_text):
+            return anchor.text
+
+        return roi_text
 
     @staticmethod
     def _merge_same_line(anchor: WordToken, candidates: list[WordToken]) -> str:

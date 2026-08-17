@@ -1326,3 +1326,182 @@ Phiên này minh chứng rõ giá trị của "chạy thật để verify" sau M
 (Rule 12) thay vì gộp nhiều thay đổi rồi mới test — nếu gộp cả 3 fix
 của Bước 4 vào 1 lần test duy nhất, sẽ khó xác định chính xác vòng nào
 thật sự giải quyết bug.
+
+------------------------------------------------------------------------
+
+# Session 2026-08-17 — Triển khai OCR_ACCURACY_SPECIFICATION.md: Two-Pass ROI OCR
+
+## Mục tiêu
+
+Triển khai đặc tả `OCR_ACCURACY_SPECIFICATION.md` (V2.0) - Two-Pass ROI
+OCR cho field DECIMAL nguồn OCR, nhằm giảm nhầm lẫn dấu `,`/`.` do OCR
+đọc sai (Known Issue tồn đọng từ ADR-052/053, tỷ lệ lỗi khi đó <0.5%
+nhưng chưa về 0%).
+
+## Hoàn thành
+
+4 bước implementation theo đúng lộ trình spec Mục 6 (constants → Global
+Pass config → `recognize_numeric_roi()` + unit test → tích hợp
+`TemplateMatcher`). Sau đó, phát hiện regression nghiêm trọng qua chạy
+thật, debug qua nhiều vòng cô lập biến số, tìm và sửa 2 lỗi thiết kế
+thật (ADR-071, ADR-073), bác bỏ 1 phần đề xuất của spec dựa trên bằng
+chứng thực nghiệm (ADR-074).
+
+## Quyết định kiến trúc
+
+→ ADR-070 đến ADR-074.
+
+## Bối cảnh chẩn đoán chính (giá trị lớn nhất của phiên này)
+
+### Vòng 1-4: Regression "field DECIMAL trả None hàng loạt"
+
+Sau khi implement đủ 4 bước theo spec, người dùng báo cáo: nhiều field
+DECIMAL nguồn OCR trả `None` (ô Excel trống + `Report.txt` ghi
+`field=None`) - mô tả ban đầu "OCR gần như mất khả năng đọc các định
+dạng number".
+
+**Giả thuyết 1 (Assistant tự đề xuất, SAI):** sai lệch hệ tọa độ do
+thiếu deskew trong `recognize_numeric_roi()` (Pass 2 cắt từ ảnh gốc
+chưa xoay, trong khi bbox tính theo ảnh đã xoay của Pass 1). Người dùng
+áp dụng fix, kết quả KHÔNG đổi - loại trừ giả thuyết này là nguyên nhân
+CHÍNH (dù fix vẫn đúng đắn về mặt kỹ thuật, giữ lại - xem ADR-072).
+
+**Giả thuyết 2 (Assistant tự đề xuất, SAI):** cấu hình Global Pass mới
+(`textord_heavy_nr=1` - cờ "heavy noise removal" có thể xóa nhầm dấu
+`,`/`.` là nhiễu) làm hỏng token số ngay tại Pass 1. Người dùng revert
+`self._config` về baseline để test, kết quả KHÔNG đổi - loại trừ giả
+thuyết này là nguyên nhân CHÍNH của regression `None` (nhưng phát hiện
+giá trị PHỤ quan trọng - xem Vòng "Global Pass A/B" bên dưới).
+
+**Vòng 3 - xác nhận đúng phạm vi lỗi (Assistant đề xuất kiểm chứng có
+mục tiêu):** tắt hẳn Pass 2 (bypass `_resolve_decimal_value()`, chỉ
+dùng `anchor.text`) - khôi phục đúng kết quả 100%. Xác nhận: lỗi nằm
+TRONG logic quyết định của `_resolve_decimal_value()`, không phải Pass
+1/deskew.
+
+**Vòng 4 - xác định đúng nguyên nhân gốc:** rà soát lại `_resolve_decimal_value()`
+- phát hiện hàm này KHÔNG BAO GIỜ trả `None` trực tiếp (mọi nhánh trả
+string), nhưng KHÔNG validate `roi_text` trước khi chấp nhận
+(`return roi_text or anchor.text`). Suy luận: `roi_text` không rỗng
+nhưng là RÁC (không parse được thành số) -> ghi đè `anchor.text` đúng ->
+chuỗi rác lọt tới `ValueConverter._to_decimal()` -> theo ADR-032, convert
+lỗi trả `None` - đây là nơi `None` THẬT SỰ phát sinh, không phải trong
+`TemplateMatcher`. Giải pháp: validate `roi_text` bằng `value_pattern`
+trước khi chấp nhận (ADR-071).
+
+**Bài học quan trọng (Assistant tự nhận, KHÔNG né tránh):** đã đưa ra 2
+giả thuyết sai liên tiếp dựa trên suy luận từ mã nguồn tĩnh, thay vì bắt
+đầu từ dữ liệu thực nghiệm cụ thể. Chỉ khi người dùng cung cấp log thật
+(`anchor.text`/`roi_text` cụ thể cho 4 field trên 1 PDF thật) thì mới
+xác định đúng vấn đề tiếp theo (padding, xem dưới). Đối xứng bài học đã
+ghi ở Rule 15 (`DEVELOPMENT_WORKFLOW.md`) - "chạy thật để verify" quan
+trọng hơn suy luận tĩnh, dù đúng cho code lẫn debug.
+
+### Phát hiện lỗi thứ 2: ROI padding tính theo trang gây tràn nội dung
+
+Sau khi sửa ADR-071, người dùng cung cấp log thật cho 1 PDF cụ thể - cả
+4/4 field đều có `roi_text` dư ký tự (chữ "V" - mảnh ký hiệu VNĐ) so với
+`anchor.text` đúng. Người dùng tự đặt câu hỏi "vì sao ROI luôn nhận thêm
+ký tự V" - dẫn tới phát hiện: `ROI_PADDING_X`/`Y` (theo Mục 4.2.A của
+spec) là hằng số tuyệt đối theo TRANG, không tương quan với kích thước
+TOKEN đang cắt - field ngắn (`"10%"`) bị tràn nặng nhất, khớp đúng dữ
+liệu quan sát (field ngắn nhất luôn sai lâu nhất qua các mức padding).
+
+**Thảo luận về giải pháp (người dùng chủ động đề xuất hướng đúng):**
+người dùng đề xuất tính padding theo `bbox.height` thay vì theo trang.
+Assistant ban đầu chỉ dừng ở "đồng ý kết luận", nhưng người dùng tiếp
+tục hỏi sâu hơn: "nếu phụ thuộc DPI/size thì giá trị đề xuất sẽ không
+khả thi khi DPI thay đổi theo khổ giấy (kế hoạch v2.0)". Assistant
+chứng minh bằng suy diễn toán học (không chỉ khẳng định) rằng thiết kế
+theo `bbox.height` TỰ ĐỘNG bất biến theo DPI (padding vật lý tuyệt đối
+tỉ lệ đúng theo DPI mà không cần code biết DPI cụ thể) - quan trọng cho
+tính tương thích với ADR-053 (kế hoạch DPI thích ứng theo khổ giấy,
+PROJECT_CONTEXT.md §18).
+
+**Tinh chỉnh thực nghiệm:** dò dần 6 mức giá trị (theo công thức cũ,
+quy đổi tương đương công thức mới) - hội tụ về khoảng `0.06-0.08` cho
+`ROI_PADDING_RATIO`. Chọn điểm giữa `0.07` để tiếp tục test trên batch
+lớn hơn (không chốt ngay từ 1 PDF đơn lẻ).
+
+**Sự cố xác minh dữ liệu:** ở 1 thời điểm, người dùng nhầm lẫn `subtotal`
+là sai (dao động giữa các mức padding: `9,330,381` → `9,330,331` →
+`9,330,361`) - Assistant từ chối kết luận "kết quả mong muốn" khi chưa
+biết giá trị thật, yêu cầu xác minh. Người dùng xác nhận đây là nhầm
+lẫn của mình - giá trị đúng chính là `9,330,381`, và ở dải padding cuối
+(`0.0007-0.0004` cũ) cả `anchor` lẫn `roi` đều đã khớp đúng giá trị này.
+
+### Vòng Global Pass A/B: bác bỏ 1 phần đề xuất của spec
+
+Từ phát hiện phụ ở Vòng 2 (revert `self._config` không giải quyết
+regression `None`, nhưng cũng không rõ có lợi hay hại), người dùng chủ
+động chạy A/B test CÓ KIỂM SOÁT trên tập `high_noise` (18 PDF tự chọn có
+tỷ lệ lỗi cao nhất từ trước tới nay, dùng xuyên suốt phiên làm bộ test
+chuẩn) - so sánh đúng 72 field DECIMAL giữa 2 cấu hình Pass 1. Kết quả:
+áp dụng đề xuất Mục 4.1.C của spec (tắt DAWG + `textord_heavy_nr` cho
+toàn trang) gây hồi quy rõ ràng (2/72 field mất hoàn toàn, từ 0 lên 2)
+mà KHÔNG cải thiện gì (số case sai dấu vẫn 1). Quyết định: BÁC BỎ đề
+xuất này của spec cho pipeline hiện tại - đối xứng cách dự án đã bác bỏ
+đề xuất Binarization tại Session 2026-08-13 (yêu cầu bằng chứng thực
+nghiệm, không chấp nhận rủi ro lý thuyết chưa kiểm chứng). → ADR-074.
+
+### Khoanh vùng lại phạm vi thảo luận: "3 nhóm cải thiện OCR"
+
+Điểm ngoặt quan trọng trong phiên: khi Assistant đề xuất dừng ở kết quả
+71/72 (chấp nhận 1 case sai còn lại như "giới hạn đã biết ADR-052"),
+người dùng PHẢN ĐỐI rõ ràng: nhận định đó là giải pháp "hậu OCR" (nhóm
+3 - `ValueConverter` sửa chữa sau khi đã đọc), trong khi phạm vi công
+việc hiện tại là "kết quả OCR gốc" (nhóm 2 - Tesseract đọc đúng ngay từ
+đầu). Người dùng minh định 3 nhóm cải thiện riêng biệt (tiền xử lý ảnh /
+kết quả OCR gốc / hậu xử lý số) và yêu cầu Assistant giữ đúng phạm vi
+đang làm việc (nhóm 2), không viện dẫn cơ chế nhóm 3 để biện minh cho lỗi
+chưa giải quyết ở nhóm 2. Assistant thừa nhận nhầm lẫn phạm vi và điều
+chỉnh lại theo đúng khung phân loại của người dùng cho phần còn lại của
+phiên.
+
+## Vướng mắc gặp phải
+
+Toàn bộ vướng mắc của phiên này đã mô tả chi tiết ở phần "Bối cảnh chẩn
+đoán chính" trên - không lặp lại. Điểm nhấn: đây là phiên có tỷ lệ giả
+thuyết SAI của Assistant cao bất thường (2/3 giả thuyết đầu tiên sai),
+chỉ được điều chỉnh đúng hướng nhờ người dùng liên tục cung cấp dữ liệu
+thực nghiệm cụ thể (log `anchor.text`/`roi_text`, kết quả A/B test có
+kiểm soát) thay vì chấp nhận suy luận tĩnh của Assistant.
+
+## Validation
+
+Unit test tự động: `pytest -v` PASS toàn bộ (bao gồm `test_ocr_engine.py`
+mới) tại thời điểm áp dụng ADR-071, nhưng `TestCropRoi` sẽ FAIL sau khi
+áp dụng ADR-073 (công thức padding đổi) - CHƯA được viết lại, đây là nợ
+kỹ thuật cần xử lý đầu tiên ở phiên sau.
+
+Thực nghiệm thật trên tập `high_noise` (18 PDF, 72 field DECIMAL, tự
+chọn có tỷ lệ lỗi cao nhất): baseline gốc (chưa Two-Pass) không rõ số
+liệu cụ thể (không phải trọng tâm phiên); sau ADR-071 (validate) +
+ADR-073 (padding=0.07): 71/72 đúng - nhưng field sai đã CHUYỂN SANG PDF
+KHÁC so với vòng test trước đó với cùng bộ 18 PDF - dấu hiệu tình huống
+phức tạp hơn 1 tham số đơn lẻ có thể giải quyết triệt để.
+
+## Phiên tiếp theo (phiên riêng, theo yêu cầu người dùng)
+
+Ưu tiên: tiếp tục tinh chỉnh `ROI_PADDING_RATIO` (giá trị `0.07` chưa
+chốt) trên batch `high_noise` đầy đủ - điều tra vì sao field sai "di
+chuyển" giữa các PDF khi đổi padding (có thể do khác biệt font/chất
+lượng scan giữa các PDF, cần xác nhận thay vì suy đoán). Sau khi đóng
+được padding: viết lại `TestCropRoi`, thử nghiệm Median Blur (Mục
+4.1.A, chưa áp dụng), thử nghiệm `PREPROCESS_SHARPEN_SIGMA`/`AMOUNT`
+(Mục 4.1.B, spec đề xuất `1.0/0.3` → `0.6/0.4`, chưa thử). Cuối cùng: đo
+Tiêu chí #3 (Performance <50ms/trang) và #4 (Memory) - nên đo SAU khi
+mọi thay đổi accuracy đã chốt để tránh đo lại nhiều lần.
+
+## Ghi chú
+
+Phiên này minh chứng rõ giá trị của phương pháp luận đã thiết lập từ
+đầu dự án (Rule 15, "chạy thật để verify") ở mức độ sâu hơn bình thường:
+không chỉ code cần verify bằng chạy thật, mà cả GIẢ THUYẾT DEBUG cũng
+cần - 2/3 giả thuyết đầu của Assistant tưởng hợp lý về mặt kỹ thuật
+nhưng đều sai khi đối chiếu thực nghiệm. Người dùng đóng vai trò quan
+trọng trong việc giữ đúng kỷ luật thực nghiệm (từ chối "kết luận sớm"
+khi Assistant đề xuất dừng ở 71/72, yêu cầu làm rõ phạm vi "nhóm 2 vs
+nhóm 3" khi Assistant lẫn lộn) - đối xứng vai trò người dùng đã thể hiện
+ở Session 2026-08-13 (bác bỏ 2 đề xuất kỹ thuật của Assistant với lý do
+xác đáng).

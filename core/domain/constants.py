@@ -123,8 +123,7 @@ class OCR:
 
     # --- Two-Pass ROI OCR (Tầng 2, chỉ áp dụng ValueType.DECIMAL) ---
     ROI_UPSCALE_FACTOR = 2.0
-    ROI_PADDING_X = 0.02
-    ROI_PADDING_Y = 0.01
+    ROI_PADDING_RATIO = 0.07  # % theo chiều cao bbox - giá trị khởi điểm, xem suy diễn dưới
 
     # Whitelist ký tự cho Pass 2 (ROI số), theo TỪNG ngôn ngữ - khóa khớp
     # OCR.LANG (mã tessdata, "vie"/"eng"...). "vie" cần thêm đ/Đ (hậu tố

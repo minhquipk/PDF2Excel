@@ -47,11 +47,7 @@ class OCREngine:
     def __init__(self) -> None:
         # Cấu hình Tesseract dựng 1 lần, tái sử dụng cho mọi lần gọi
         # recognize() - không đổi giữa các trang/PDF trong cùng batch.
-        self._config = (
-            f'--tessdata-dir "{TESSDATA_DIR}" --psm {OCR.PSM} --oem {OCR.OEM} '
-            '-c load_system_dawg=0 -c load_freq_dawg=0 -c load_punc_dawg=0 '
-            '-c textord_heavy_nr=1 -c classify_enable_learning=0'
-        )
+        self._config = f'--tessdata-dir "{TESSDATA_DIR}" --psm {OCR.PSM} --oem {OCR.OEM}'
         self._traineddata_checked = False
 
     def _ensure_traineddata(self) -> None:
@@ -135,6 +131,10 @@ class OCREngine:
         self._ensure_traineddata()
 
         image = self._to_numpy_array(page_image)
+        # MỚI - đồng bộ hệ tọa độ với recognize() (Pass 1),
+        # nếu không, bbox tính trên ảnh đã xoay sẽ cắt sai
+        # vị trí trên ảnh gốc chưa xoay khi trang bị nghiêng
+        image = self._deskew(image)
         roi = self._crop_roi(image, normalized_bbox, page_image.width, page_image.height)
         roi = cv2.resize(
             roi, (0, 0),
@@ -153,18 +153,26 @@ class OCREngine:
         return text.strip()
 
     @staticmethod
+    @staticmethod
     def _crop_roi(
             image: np.ndarray,
             normalized_bbox: tuple[float, float, float, float],
             width: int,
             height: int,
     ) -> np.ndarray:
-        """Cắt vùng ROI từ ảnh trang, có padding an toàn (Mục 4.2.A)."""
+        """Cắt vùng ROI từ ảnh trang, padding tỉ lệ theo CHIỀU CAO bbox (đại
+        diện cỡ chữ/font size) - không theo kích thước trang. Tránh 2 rủi ro
+        đối lập: tràn sang token/cột liền kề khi token ngắn (VD "10%"), và
+        cắt mất mép ký tự khi padding quá chật - cả 2 đều gây OCR sai dấu
+        phân cách (xem thực nghiệm thật trên PDF high_noise)."""
         x0, y0, x1, y1 = normalized_bbox
-        px0 = max(0, int((x0 - OCR.ROI_PADDING_X) * width))
-        px1 = min(width, int((x1 + OCR.ROI_PADDING_X) * width) + 1)
-        py0 = max(0, int((y0 - OCR.ROI_PADDING_Y) * height))
-        py1 = min(height, int((y1 + OCR.ROI_PADDING_Y) * height) + 1)
+        bbox_height_px = (y1 - y0) * height
+        pad_px = max(1, int(bbox_height_px * OCR.ROI_PADDING_RATIO))
+
+        px0 = max(0, int(x0 * width) - pad_px)
+        px1 = min(width, int(x1 * width) + pad_px)
+        py0 = max(0, int(y0 * height) - pad_px)
+        py1 = min(height, int(y1 * height) + pad_px)
         return image[py0:py1, px0:px1]
 
     @staticmethod
