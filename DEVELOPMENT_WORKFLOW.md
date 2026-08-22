@@ -249,3 +249,22 @@ Session 2026-08-12 — xem ADR-056).
   dự án.
 
 ------------------------------------------------------------------------
+
+## Rule 16 — Cô lập giai đoạn khi cải thiện OCR
+
+Mọi cải thiện độ chính xác OCR phải được phân loại và kiểm thử độc lập
+theo đúng một trong ba giai đoạn:
+
+1. **Tiền xử lý ảnh** — deskew, denoise, CLAHE, sharpen, binarization…
+2. **Kết quả trực tiếp của OCR** — model/language data, PSM, whitelist,
+   ROI crop, upscale và interpolation.
+3. **Hậu xử lý kết quả OCR** — heuristic/validation/repair, ví dụ
+   `ValueConverter`.
+
+Khi đang tối ưu một giai đoạn, không đồng thời thay đổi tham số thuộc
+giai đoạn khác. Mỗi A/B test chỉ đổi một biến số của giai đoạn đang xét;
+đánh giá theo ground truth và phải ghi riêng số field được sửa, field vẫn
+sai, và field Pass 2 làm xấu kết quả Pass 1 đúng. Chỉ kết hợp các giai
+đoạn sau khi từng giai đoạn đã được đánh giá độc lập.
+
+------------------------------------------------------------------------

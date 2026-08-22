@@ -21,3 +21,8 @@ REPORTS_DIR = BASE_DIR / "reports"
 # Đóng gói cùng project - KHÔNG dùng tessdata mặc định của hệ điều hành
 # (chất lượng thấp hơn, xem CHANGELOG.md/SESSION_SUMMARIES.md phiên OCR).
 TESSDATA_DIR = BASE_DIR / "resources" / "tessdata_best"
+
+# Model English integer của tessdata_fast chỉ dùng cho Pass 2 (ROI số).
+# Pass 1 vẫn phải dùng TESSDATA_DIR/vie.traineddata để nhận diện layout và
+# anchor tiếng Việt.
+ROI_TESSDATA_DIR = BASE_DIR / "resources" / "tessdata_fast"

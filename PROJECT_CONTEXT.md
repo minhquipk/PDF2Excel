@@ -449,15 +449,16 @@ module cụ thể. Mỗi mục có pointer `→ ADR-xxx` cho lý do kỹ thuật
   `OCR.PREPROCESS_*` là giá trị ước lượng ban đầu, cần tinh chỉnh khi
   có thêm dữ liệu PDF Scanned thật đa dạng hơn. → ADR-052, ADR-053.
 - **`OCR_ACCURACY_SPECIFICATION.md` (Two-Pass ROI OCR) đang triển khai
-  dở dang, CHƯA đóng** (Session 2026-08-17) - cơ chế cốt lõi đã hoạt
-  động đúng (ADR-070/071/072/073/074), tỷ lệ đạt 71/72 trên tập
-  `high_noise` (18 PDF tự chọn tỷ lệ lỗi cao nhất) nhưng field sai còn
-  lại "di chuyển" giữa các PDF khi đổi `ROI_PADDING_RATIO` - chưa rõ
-  nguyên nhân, cần điều tra thêm. `ROI_PADDING_RATIO` (hiện `0.07`)
-  CHƯA chốt giá trị cuối. Median Blur (Mục 4.1.A) và
-  `PREPROCESS_SHARPEN_SIGMA`/`AMOUNT` (Mục 4.1.B) của spec CHƯA thực
-  nghiệm. Tiêu chí Performance (#3, <50ms/trang) và Memory (#4) CHƯA đo.
-  → ADR-070 đến ADR-074.
+  dở dang, CHƯA đóng** (cập nhật Session 2026-08-21). Giai đoạn 2
+  (output trực tiếp của OCR) hiện dùng Pass 1 `vie`/tessdata_best và Pass
+  2 `eng`/tessdata_fast, PSM=8, whitelist số/dấu. Trên tập test hiện hành,
+  Pass 1 còn 6 field sai; `ROI_UPSCALE_FACTOR=1.25` tạm sửa đúng 5/6 mà
+  không làm xấu field Pass 1 đúng. Các giá trị `1.25`, `1.3`, `1.45`,
+  `1.85`, `1.9` có cùng số field sửa đúng nên `1.25` chưa là giá trị final.
+  `ROI_PADDING_RATIO` vẫn là `0.07` và chưa chốt. Giai đoạn 1 (Median
+  Blur/Unsharp Masking) và giai đoạn 3 (heuristic hậu OCR) chưa được trộn
+  vào thực nghiệm hiện tại. Performance (<50ms/trang) và Memory chưa đo.
+  → ADR-070 đến ADR-076.
 - **`tests/core/extraction/test_ocr_engine.py::TestCropRoi` lỗi thời**
   sau ADR-073 (công thức padding đổi từ theo-trang sang theo-bbox.height)
   - 4 test case hiện viết theo công thức cũ, cần viết lại. → ADR-073.
@@ -542,10 +543,10 @@ Session 2026-08-13; Part 3/3 — Session 2026-08-14).
 
 ## Giai đoạn tiếp theo (chưa bắt đầu)
 
-0. **Tiếp tục `OCR_ACCURACY_SPECIFICATION.md`** (phiên riêng, dời từ
-   Session 2026-08-17): điều tra field sai "di chuyển" giữa PDF khi đổi
-   `ROI_PADDING_RATIO`, chốt giá trị cuối; viết lại `TestCropRoi`; thử
-   nghiệm Median Blur + Sharpen sigma/amount; đo Performance/Memory.
+0. **Tiếp tục `OCR_ACCURACY_SPECIFICATION.md`**: hoàn tất đánh giá độc
+   lập giai đoạn 2 và chốt `ROI_UPSCALE_FACTOR`/các tham số ROI; viết lại
+   `TestCropRoi`. Sau đó mới thử riêng giai đoạn 1 (Median Blur, Sharpen)
+   và cuối cùng đo Performance/Memory.
 1. **Tài liệu chuyển giao ứng dụng:**
    - `resources/excel_mapping.json` khớp workbook Excel thật của
      người dùng cuối.

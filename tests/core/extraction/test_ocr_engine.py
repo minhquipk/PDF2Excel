@@ -32,6 +32,7 @@ Bối cảnh:
 from __future__ import annotations
 from unittest.mock import patch
 import numpy as np
+from config import ROI_TESSDATA_DIR
 from core.domain.constants import OCR
 from core.domain.models import PageImage
 from core.extraction.ocr_engine import OCREngine
@@ -92,9 +93,8 @@ class TestRecognizeNumericRoi:
         samples = bytes(width * height * 3)
         return PageImage(samples=samples, width=width, height=height, dpi=450, channels=3)
 
-    def test_uses_vie_whitelist_by_default(self) -> None:
-        # OCR.LANG = "vie" (mặc định v1, hard-code) -> phải dùng đúng
-        # OCR.ROI_CHAR_WHITELIST["vie"] (bao gồm đ/Đ/₫), PSM=7, OEM=3.
+    def test_uses_eng_fast_model_and_numeric_whitelist(self) -> None:
+        # Pass 2 chỉ OCR số: eng/tessdata_fast + whitelist số hẹp + PSM=8.
         engine = OCREngine()
         with patch.object(engine, "_ensure_traineddata"), \
              patch("core.extraction.ocr_engine.pytesseract.image_to_string") as mock_ocr:
@@ -105,36 +105,25 @@ class TestRecognizeNumericRoi:
 
         assert result == "1.234.567,89"
         called_config = mock_ocr.call_args.kwargs["config"]
-        assert OCR.ROI_CHAR_WHITELIST["vie"] in called_config
-        assert "--psm 7" in called_config
+        assert mock_ocr.call_args.kwargs["lang"] == OCR.ROI_LANG
+        assert f'--tessdata-dir "{ROI_TESSDATA_DIR}"' in called_config
+        assert OCR.ROI_CHAR_WHITELIST["eng"] in called_config
+        assert "--psm 8" in called_config
         assert "--oem 3" in called_config
-
-    def test_falls_back_to_vie_whitelist_for_unknown_lang(self) -> None:
-        # OCR.LANG bị đổi thành mã KHÔNG có trong ROI_CHAR_WHITELIST ->
-        # fallback về "vie" (giữ đúng hành vi mặc định), KHÔNG raise KeyError.
-        engine = OCREngine()
-        with patch("core.extraction.ocr_engine.OCR.LANG", "fra"), \
-             patch.object(engine, "_ensure_traineddata"), \
-             patch("core.extraction.ocr_engine.pytesseract.image_to_string") as mock_ocr:
-            mock_ocr.return_value = "500000"
-            engine.recognize_numeric_roi(self._make_page_image(), (0.1, 0.1, 0.5, 0.5))
-
-        called_config = mock_ocr.call_args.kwargs["config"]
-        assert OCR.ROI_CHAR_WHITELIST["vie"] in called_config
 
     def test_strips_whitespace_from_result(self) -> None:
         engine = OCREngine()
         with patch.object(engine, "_ensure_traineddata"), \
              patch("core.extraction.ocr_engine.pytesseract.image_to_string") as mock_ocr:
-            mock_ocr.return_value = "  4,842,303VND  \n"
+            mock_ocr.return_value = "  4,842,303  \n"
             result = engine.recognize_numeric_roi(
                 self._make_page_image(), (0.1, 0.1, 0.5, 0.5)
             )
 
-        assert result == "4,842,303VND"
+        assert result == "4,842,303"
 
     def test_disables_dawg_dictionaries(self) -> None:
-        # Whitelist ký tự chỉ hiệu quả nếu DAWG (từ điển tiếng Việt tự
+        # Whitelist ký tự chỉ hiệu quả nếu DAWG (từ điển ngôn ngữ tự
         # nhiên) bị tắt - thiếu cờ này, Tesseract vẫn có thể ưu tiên từ
         # vựng thay vì cấu trúc số (Mục 2.2 spec - nguyên nhân gốc rễ).
         engine = OCREngine()
@@ -149,8 +138,8 @@ class TestRecognizeNumericRoi:
         assert "load_punc_dawg=0" in called_config
 
     def test_calls_ensure_traineddata_before_recognizing(self) -> None:
-        # Đối xứng recognize() hiện có (ADR-061): kiểm tra vie.traineddata
-        # lazy, đúng lần đầu được gọi. Xác nhận recognize_numeric_roi()
+        # Kiểm tra eng.traineddata lazy, đúng lần đầu được gọi. Xác nhận
+        # recognize_numeric_roi()
         # KHÔNG bỏ qua bước này (tránh crash mờ ám nếu thiếu tessdata).
         engine = OCREngine()
         with patch.object(engine, "_ensure_traineddata") as mock_ensure, \
@@ -158,4 +147,6 @@ class TestRecognizeNumericRoi:
             mock_ocr.return_value = "100"
             engine.recognize_numeric_roi(self._make_page_image(), (0.1, 0.1, 0.5, 0.5))
 
-        mock_ensure.assert_called_once()
+        mock_ensure.assert_called_once_with(
+            ROI_TESSDATA_DIR, OCR.ROI_LANG, "tessdata_fast"
+        )

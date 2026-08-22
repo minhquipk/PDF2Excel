@@ -37,6 +37,12 @@ from core.domain.models import (
     TemplateSelection,
     WordToken,
 )
+# Đầu file, thêm import tạm thời:
+from pathlib import Path
+import itertools
+
+_DEBUG_ROI_COUNTER = itertools.count()
+_DEBUG_ROI_DIR = Path("debug_roi")  # DEBUG TẠM THỜI
 
 
 def _strip_diacritics(text: str) -> str:
@@ -456,6 +462,20 @@ class TemplateMatcher:
 
         if not roi_text:
             return anchor.text
+
+        # DEBUG TẠM THỜI - chỉ lưu ảnh + log khi anchor/roi khác nhau
+        if roi_text not in anchor.text:
+            _DEBUG_ROI_DIR.mkdir(exist_ok=True)
+            idx = next(_DEBUG_ROI_COUNTER)
+            debug_path = str(_DEBUG_ROI_DIR / f"{idx:03d}_{field_def.field_name}.png")
+            try:
+                self._ocr_engine.recognize_numeric_roi(
+                    page_image, anchor.normalized_bbox, debug_save_path=debug_path
+                )
+            except Exception:
+                debug_path = "(save failed)"
+            print(f"[DEBUG-ROI] file={debug_path} field={field_def.field_name} "
+                  f"anchor.text={anchor.text!r} roi_text={roi_text!r}")
 
         # MỚI - validate roi_text khớp value_pattern trước khi tin tưởng Pass 2.
         # Nếu không, Pass 2 (context hẹp hơn Pass 1) có thể trả về rác không rỗng,

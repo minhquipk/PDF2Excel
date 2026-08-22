@@ -13,11 +13,12 @@ gói hệ thống.
 """
 
 from __future__ import annotations
+from pathlib import Path
 import cv2
 import numpy as np
 import pytesseract
 from PIL import Image
-from config import TESSDATA_DIR
+from config import ROI_TESSDATA_DIR, TESSDATA_DIR
 from core.domain.constants import OCR
 from core.domain.models import PageImage
 
@@ -48,27 +49,33 @@ class OCREngine:
         # Cấu hình Tesseract dựng 1 lần, tái sử dụng cho mọi lần gọi
         # recognize() - không đổi giữa các trang/PDF trong cùng batch.
         self._config = f'--tessdata-dir "{TESSDATA_DIR}" --psm {OCR.PSM} --oem {OCR.OEM}'
-        self._traineddata_checked = False
+        self._checked_traineddata: set[tuple[Path, str]] = set()
 
-    def _ensure_traineddata(self) -> None:
-        """Kiểm tra vie.traineddata tồn tại - chỉ chạy thật sự lần đầu.
+    def _ensure_traineddata(
+        self,
+        tessdata_dir: Path,
+        language: str,
+        repository: str,
+    ) -> None:
+        """Kiểm tra traineddata theo từng Pass - chỉ chạy thật sự lần đầu.
 
-        Cache qua self._traineddata_checked để không lặp lại I/O này ở
-        mỗi trang/mỗi PDF trong cùng batch (recognize() có thể được gọi
-        hàng trăm/nghìn lần trong 1 lượt xử lý).
+        Pass 1 dùng ``vie``/tessdata_best, Pass 2 dùng
+        ``eng``/tessdata_fast. Cache theo cặp thư mục-ngôn ngữ để tránh lặp
+        I/O với hàng trăm trang hoặc ROI trong cùng batch.
         """
-        if self._traineddata_checked:
+        key = tessdata_dir, language
+        if key in self._checked_traineddata:
             return
 
-        traineddata = TESSDATA_DIR / f"{OCR.LANG}.traineddata"
+        traineddata = tessdata_dir / f"{language}.traineddata"
         if not traineddata.exists():
             raise FileNotFoundError(
                 f"Không tìm thấy '{traineddata}'. Tải file tại "
-                f"https://github.com/tesseract-ocr/tessdata_best/raw/main/{OCR.LANG}.traineddata "
-                f"và đặt vào '{TESSDATA_DIR}'."
+                f"https://github.com/tesseract-ocr/{repository}/raw/main/{language}.traineddata "
+                f"và đặt vào '{tessdata_dir}'."
             )
 
-        self._traineddata_checked = True
+        self._checked_traineddata.add(key)
 
     def recognize(
         self,
@@ -87,7 +94,7 @@ class OCREngine:
             _ensure_traineddata()) - chỉ raise khi hàm này thực sự được
             gọi lần đầu, không phải lúc __init__().
         """
-        self._ensure_traineddata()
+        self._ensure_traineddata(TESSDATA_DIR, OCR.LANG, "tessdata_best")
 
         image = self._to_numpy_array(page_image)
         image = self._deskew(image)
@@ -121,6 +128,7 @@ class OCREngine:
             self,
             page_image: PageImage,
             normalized_bbox: tuple[float, float, float, float],
+            debug_save_path: str | None = None,  # DEBUG TẠM THỜI - xóa sau khi điều tra xong
     ) -> str:
         """Re-OCR 1 vùng số (ROI) với cấu hình chuyên biệt (Pass 2, ADR mới).
 
@@ -128,7 +136,7 @@ class OCREngine:
         trả về text thô (chưa qua ValueConverter). Không dùng chung self._config
         (Pass 1) - Pass 2 cần whitelist + PSM riêng biệt cho dòng đơn.
         """
-        self._ensure_traineddata()
+        self._ensure_traineddata(ROI_TESSDATA_DIR, OCR.ROI_LANG, "tessdata_fast")
 
         image = self._to_numpy_array(page_image)
         # MỚI - đồng bộ hệ tọa độ với recognize() (Pass 1),
@@ -139,20 +147,27 @@ class OCREngine:
         roi = cv2.resize(
             roi, (0, 0),
             fx=OCR.ROI_UPSCALE_FACTOR, fy=OCR.ROI_UPSCALE_FACTOR,
-            interpolation=cv2.INTER_CUBIC,
+            interpolation=cv2.INTER_LINEAR,
         )
+        roi = self._preprocess(roi)
 
-        whitelist = OCR.ROI_CHAR_WHITELIST.get(OCR.LANG, OCR.ROI_CHAR_WHITELIST["vie"])
+        # DEBUG TẠM THỜI - lưu đúng ảnh cuối cùng đưa vào Tesseract (đã crop + upscale)
+        if debug_save_path:
+            bgr = cv2.cvtColor(roi, cv2.COLOR_RGB2BGR) if roi.ndim == 3 else roi
+            cv2.imwrite(debug_save_path, bgr)
+
+        whitelist = OCR.ROI_CHAR_WHITELIST[OCR.ROI_LANG]
         config = (
-            f'--tessdata-dir "{TESSDATA_DIR}" --psm 7 --oem 3 '
+            f'--tessdata-dir "{ROI_TESSDATA_DIR}" --psm 8 --oem 3 '
             f'-c tessedit_char_whitelist={whitelist} '
             '-c load_system_dawg=0 -c load_freq_dawg=0 -c load_punc_dawg=0'
         )
 
-        text = pytesseract.image_to_string(Image.fromarray(roi), lang=OCR.LANG, config=config)
+        text = pytesseract.image_to_string(
+            Image.fromarray(roi), lang=OCR.ROI_LANG, config=config
+        )
         return text.strip()
 
-    @staticmethod
     @staticmethod
     def _crop_roi(
             image: np.ndarray,

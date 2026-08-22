@@ -90,6 +90,8 @@ quyết định cuối cùng và lý do kỹ thuật của nó.
 | ADR-072 | `recognize_numeric_roi()` phải deskew trước khi crop | Accepted |
 | ADR-073 | ROI padding tính theo tỉ lệ chiều cao bbox (`ROI_PADDING_RATIO`), không theo kích thước trang | Accepted (đang tinh chỉnh giá trị) |
 | ADR-074 | Bác bỏ cấu hình tắt DAWG/`textord_heavy_nr` cho Global Pass (Mục 4.1.C spec) | Accepted |
+| ADR-075 | Cô lập 3 giai đoạn cải thiện OCR khi thực nghiệm | Accepted |
+| ADR-076 | Pass 1 dùng `vie`/tessdata_best; Pass 2 dùng `eng`/tessdata_fast + PSM=8 | Accepted |
 
 ------------------------------------------------------------------------
 
@@ -2201,3 +2203,46 @@ phiên sau (xem PROJECT_CONTEXT.md §15).
 
 Xác nhận trong implementation: `core/extraction/ocr_engine.py::OCREngine.__init__()`
 (không đổi so với trước khi triển khai `OCR_ACCURACY_SPECIFICATION.md`).
+
+------------------------------------------------------------------------
+
+## ADR-075 --- Cô Lập Ba Giai Đoạn Cải Thiện OCR Khi Thực Nghiệm
+
+**Status:** Accepted
+
+Mọi thay đổi accuracy OCR được phân thành ba giai đoạn độc lập: (1) tiền
+xử lý ảnh; (2) kết quả trực tiếp của OCR; (3) hậu xử lý bằng heuristic.
+Mỗi vòng thực nghiệm chỉ thay đổi một biến trong đúng giai đoạn đang tối
+ưu và đánh giá theo ground truth. Không dùng heuristic hậu OCR để che lấp
+lỗi còn tồn tại khi mục tiêu đang là output trực tiếp của Tesseract.
+
+Việc cô lập này cho phép đánh giá độc lập model/PSM/ROI/upscale (giai đoạn
+2) trước Median Blur/Unsharp Masking (giai đoạn 1) và trước khi mở rộng
+`ValueConverter` (giai đoạn 3).
+
+Xác nhận trong quy trình: `DEVELOPMENT_WORKFLOW.md::Rule 16`.
+
+------------------------------------------------------------------------
+
+## ADR-076 --- Pass 1 `vie`/tessdata_best, Pass 2 `eng`/tessdata_fast + PSM=8
+
+**Status:** Accepted
+
+Pass 1 tiếp tục dùng `vie.traineddata` từ `resources/tessdata_best/` để
+nhận diện layout, anchor và văn bản tiếng Việt. Pass 2 chỉ nhận diện ROI
+DECIMAL, nên dùng `eng.traineddata` integer từ `resources/tessdata_fast/`,
+`PSM=8` và whitelist hẹp `0123456789.,%+-`.
+
+Thực nghiệm cho thấy PSM=7 làm sai nhiều ROI dù crop đúng; PSM=8 xử lý tốt
+hơn nhóm dấu `,`/`.` . `eng` tessdata_fast cho kết quả ổn định hơn
+`eng` tessdata_best với các nhầm lẫn glyph `0`/`6`/`8` trong ROI số. Model
+fast được đóng gói cùng project, không phụ thuộc tessdata hệ thống.
+
+Hậu tố tiền tệ không nằm trong whitelist Pass 2: template cho phép hậu tố
+vắng mặt và `ValueConverter` parse trực tiếp chuỗi số. `ROI_UPSCALE_FACTOR`
+hiện tạm giữ `1.25`, không phải một phần giá trị đóng băng của ADR này.
+
+Xác nhận trong implementation: `config.py::ROI_TESSDATA_DIR`,
+`core/domain/constants.py::OCR.ROI_LANG`,
+`core/extraction/ocr_engine.py::recognize()` và
+`recognize_numeric_roi()`.

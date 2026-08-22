@@ -122,14 +122,15 @@ class OCR:
     PREPROCESS_MEDIAN_KERNEL = 3
 
     # --- Two-Pass ROI OCR (Tầng 2, chỉ áp dụng ValueType.DECIMAL) ---
+    # Pass 1 dùng LANG=vie để đọc layout/anchor. ROI chỉ chứa số nên dùng
+    # English fast model: đã cho kết quả tốt hơn cho glyph 0/6/8 trên tập test.
+    ROI_LANG = "eng"
     ROI_UPSCALE_FACTOR = 2.0
     ROI_PADDING_RATIO = 0.07  # % theo chiều cao bbox - giá trị khởi điểm, xem suy diễn dưới
 
-    # Whitelist ký tự cho Pass 2 (ROI số), theo TỪNG ngôn ngữ - khóa khớp
-    # OCR.LANG (mã tessdata, "vie"/"eng"...). "vie" cần thêm đ/Đ (hậu tố
-    # VNĐ, xem ValueConverter._strip_currency_suffix - ADR-051); "eng"
-    # không cần vì không có hậu tố tiền tệ dạng chữ dính liền số tương tự.
-    # Chuẩn bị sẵn cấu trúc cho việc chọn ngôn ngữ ở UI (v2, xem OCR.LANG).
+    # Whitelist cho Pass 2 theo model. ``eng`` chủ đích loại hậu tố tiền tệ:
+    # value_pattern cho phép hậu tố vắng mặt và ValueConverter parse số trực
+    # tiếp, nhờ đó không mở rộng không gian phân loại của OCR.
     ROI_CHAR_WHITELIST = {
         "vie": "0123456789.,%+-đĐVND₫vnd",
         "eng": "0123456789.,%+-",
