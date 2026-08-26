@@ -676,3 +676,48 @@ với công thức mới - xem Known Issues).
 - Field sai còn lại (1/72 trên `high_noise`) di chuyển giữa các PDF khi
   đổi padding - gợi ý nguyên nhân có thể không đồng nhất giữa các PDF
   (font/chất lượng scan khác nhau), cần điều tra sâu hơn.
+
+------------------------------------------------------------------------
+
+## 2026-08-2X — ROI Preprocess Riêng Cho Pass 2 (Two-Pass ROI OCR, tiếp)
+
+### Added
+- `core/domain/constants.py::OCR`: thêm 4 hằng số
+  `ROI_PREPROCESS_CLAHE_CLIP_LIMIT`, `ROI_PREPROCESS_CLAHE_TILE_GRID_SIZE`,
+  `ROI_PREPROCESS_SHARPEN_SIGMA`, `ROI_PREPROCESS_SHARPEN_AMOUNT` — giá
+  trị chốt qua thực nghiệm cô lập (103 PDF/412 field). Xem ADR-077.
+- `core/extraction/ocr_engine.py::OCREngine`: thêm
+  `_apply_clahe_sharpen()` (hàm lõi tham số hóa, dùng chung Pass 1/2),
+  `_preprocess_roi()` (wrapper mới cho Pass 2, dùng `ROI_PREPROCESS_*`).
+
+### Changed
+- `core/extraction/ocr_engine.py::OCREngine._preprocess()`: refactor
+  thành wrapper gọi `_apply_clahe_sharpen()` với `OCR.PREPROCESS_*` —
+  hành vi/kết quả KHÔNG đổi so với trước patch (regression-safe cho
+  Pass 1/`recognize()`).
+- `core/extraction/ocr_engine.py::OCREngine.recognize_numeric_roi()`:
+  đổi lời gọi `self._preprocess(roi)` → `self._preprocess_roi(roi)`.
+
+### Quyết định kiến trúc
+→ ADR-077 (ROI Preprocess riêng), ADR-078 (hoãn `height → factor`).
+Bối cảnh đầy đủ (phương pháp cô lập, các giả thuyết bị loại trừ về vị
+trí lỗi, phát hiện lỗi glyph `6/8→0` cạnh dấu phẩy): xem
+`SESSION_SUMMARIES.md`.
+
+### Testing
+Thực nghiệm cô lập theo Rule 16, log chi tiết trong
+`ROI_PREPROCESS_EXPERIMENT_LOG.md` (không phải 1 trong 5 file nhật ký
+chính thức — tài liệu công tác riêng của phiên này). Kết quả:
+`411/412` field DECIMAL đúng trên bộ `103 PDF`.
+
+### Known Issues mới (chưa sửa — xem `PROJECT_CONTEXT.md` §14)
+- **1 field hồi quy chưa giải quyết** (CLAHE `(1.5,(2,2))` gây dư 1
+  chữ số, Sharpen không sửa được).
+- **Lỗi glyph Pass 1 `6/8→0`** (và `7→?` trên bộ mở rộng), luôn xảy ra
+  ngay sau dấu phẩy phân cách hàng nghìn — nguyên nhân gốc CHƯA xác
+  định, thuộc phạm vi Pass 1 (`recognize()`), ngoài phạm vi patch này.
+- **`ROI_UPSCALE_FACTOR`/interpolation CHƯA đồng bộ với điều kiện đã
+  verify**: source trước phiên này là `2.0`/`INTER_LINEAR`; toàn bộ
+  thực nghiệm ADR-077 chạy dưới `1.5`/`INTER_CUBIC`. Cần đồng bộ
+  `constants.py`/`ocr_engine.py` trước khi coi ADR-077 là đã áp dụng
+  đúng điều kiện verify trên production.

@@ -147,9 +147,9 @@ class OCREngine:
         roi = cv2.resize(
             roi, (0, 0),
             fx=OCR.ROI_UPSCALE_FACTOR, fy=OCR.ROI_UPSCALE_FACTOR,
-            interpolation=cv2.INTER_LINEAR,
+            interpolation=cv2.INTER_CUBIC,
         )
-        roi = self._preprocess(roi)
+        roi = self._preprocess_roi(roi)
 
         # DEBUG TẠM THỜI - lưu đúng ảnh cuối cùng đưa vào Tesseract (đã crop + upscale)
         if debug_save_path:
@@ -231,28 +231,60 @@ class OCREngine:
         )
 
     @staticmethod
-    def _preprocess(image: np.ndarray) -> np.ndarray:
-        """Tăng contrast + sharpen trước OCR để cải thiện nhận dạng ký tự nhỏ."""
-        # Chuyển sang grayscale nếu chưa phải
+    def _apply_clahe_sharpen(
+            image: np.ndarray,
+            *,
+            clahe_clip_limit: float,
+            clahe_tile_grid_size: tuple[int, int],
+            sharpen_sigma: float,
+            sharpen_amount: float,
+    ) -> np.ndarray:
+        """Lõi tăng contrast (CLAHE) + sharpen (Unsharp Mask), tham số hóa
+        đầy đủ - dùng chung cho cả Pass 1 (toàn trang) và Pass 2 (ROI),
+        mỗi Pass truyền bộ tham số riêng qua wrapper tương ứng (xem
+        _preprocess()/_preprocess_roi()). Tách khỏi hằng số cụ thể vì 2
+        ngữ cảnh có kích thước ảnh đầu vào chênh lệch rất lớn (ảnh toàn
+        trang ~3000+px vs ROI vài chục-vài trăm px) - dùng chung 1 bộ
+        tham số tuyệt đối cho cả 2 khiến tham số tối ưu cho Pass 1 làm
+        suy biến CLAHE khi áp cho Pass 2 (xem constants.py::OCR.ROI_PREPROCESS_*)."""
         gray = (
             cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
             if image.ndim == 3
             else image
         )
-        # Tăng contrast cục bộ (CLAHE — tốt hơn equalizeHist toàn cục
-        # vì hoá đơn thường có vùng sáng/tối không đều)
-        clahe = cv2.createCLAHE(clipLimit=OCR.PREPROCESS_CLAHE_CLIP_LIMIT,
-                                tileGridSize=OCR.PREPROCESS_CLAHE_TILE_GRID_SIZE)
+        clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=clahe_tile_grid_size)
         enhanced = clahe.apply(gray)
-        # Unsharp masking nhẹ để làm sắc nét cạnh ký tự
-        blur = cv2.GaussianBlur(enhanced, (0, 0), sigmaX=OCR.PREPROCESS_SHARPEN_SIGMA)
-        weight_original = 1.0 + OCR.PREPROCESS_SHARPEN_AMOUNT
-        weight_blur = -OCR.PREPROCESS_SHARPEN_AMOUNT
+        blur = cv2.GaussianBlur(enhanced, (0, 0), sigmaX=sharpen_sigma)
+        weight_original = 1.0 + sharpen_amount
+        weight_blur = -sharpen_amount
         sharpened = cv2.addWeighted(enhanced, weight_original, blur, weight_blur, 0)
-        # Trả về 3 kênh nếu input là RGB (để đồng nhất với downstream)
         if image.ndim == 3:
             return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB)
         return sharpened
+
+    @staticmethod
+    def _preprocess(image: np.ndarray) -> np.ndarray:
+        """Preprocess cho Pass 1 (toàn trang) - tham số theo OCR.PREPROCESS_*
+        (ADR-053), KHÔNG đổi so với trước khi tách hàm."""
+        return OCREngine._apply_clahe_sharpen(
+            image,
+            clahe_clip_limit=OCR.PREPROCESS_CLAHE_CLIP_LIMIT,
+            clahe_tile_grid_size=OCR.PREPROCESS_CLAHE_TILE_GRID_SIZE,
+            sharpen_sigma=OCR.PREPROCESS_SHARPEN_SIGMA,
+            sharpen_amount=OCR.PREPROCESS_SHARPEN_AMOUNT,
+        )
+
+    @staticmethod
+    def _preprocess_roi(image: np.ndarray) -> np.ndarray:
+        """Preprocess riêng cho Pass 2 (ROI) - tham số theo
+        OCR.ROI_PREPROCESS_* (đang thực nghiệm, chưa chốt giá trị cuối)."""
+        return OCREngine._apply_clahe_sharpen(
+            image,
+            clahe_clip_limit=OCR.ROI_PREPROCESS_CLAHE_CLIP_LIMIT,
+            clahe_tile_grid_size=OCR.ROI_PREPROCESS_CLAHE_TILE_GRID_SIZE,
+            sharpen_sigma=OCR.ROI_PREPROCESS_SHARPEN_SIGMA,
+            sharpen_amount=OCR.ROI_PREPROCESS_SHARPEN_AMOUNT,
+        )
 
     @staticmethod
     def _estimate_skew_angle(image: np.ndarray) -> float:

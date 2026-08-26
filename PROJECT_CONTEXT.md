@@ -462,6 +462,25 @@ module cụ thể. Mỗi mục có pointer `→ ADR-xxx` cho lý do kỹ thuật
 - **`tests/core/extraction/test_ocr_engine.py::TestCropRoi` lỗi thời**
   sau ADR-073 (công thức padding đổi từ theo-trang sang theo-bbox.height)
   - 4 test case hiện viết theo công thức cũ, cần viết lại. → ADR-073.
+- **ADR-077 (ROI Preprocess riêng) còn 1 field hồi quy chưa giải
+  quyết** (CLAHE `(1.5,(2,2))` gây dư 1 chữ số trên 1 field, Sharpen
+  không sửa được) — `411/412` trên bộ 103 PDF test.
+- **Lỗi glyph Pass 1 `{0,6,8}` xảy ra hệ thống ngay sau dấu phẩy phân
+  cách hàng nghìn** — xác nhận không phụ thuộc field_name/cỡ chữ/độ
+  đậm/vị trí đường kẻ bảng qua thực nghiệm trực tiếp; nguyên nhân gốc
+  CHƯA xác định (nghi vấn: ranh giới phân đoạn glyph dấu phẩy-chữ số
+  của Tesseract). Thuộc Pass 1 (`recognize()`), KHÔNG được Pass 2 kế
+  thừa (đã verify qua rà soát source — 2 Pass độc lập, chỉ dùng chung
+  vị trí hình học). → ADR-077 (ghi nhận), điều tra ở phiên sau.
+- **`ROI_UPSCALE_FACTOR = f(bbox.height)` bị hoãn** — bộ PDF hiện tại
+  (~10% quy mô mục tiêu, thiếu đa dạng font) không đủ để phân biệt giả
+  thuyết "height là biến chi phối" khỏi khả năng "bộ test có phân bố
+  cỡ chữ hẹp". Giữ hằng số `ROI_UPSCALE_FACTOR = 1.5` tạm thời. →
+  ADR-078.
+- **Khoảng trống đồng bộ source (CHƯA xử lý):** `constants.py::OCR.ROI_UPSCALE_FACTOR`
+  và interpolation trong `recognize_numeric_roi()` chưa khớp điều kiện
+  đã verify ở ADR-077 (`1.5`/`INTER_CUBIC`) — cần đồng bộ trước khi coi
+  `ROI_PREPROCESS_*` đã chốt là an toàn dùng trên production.
 
 ## Parsing / Template Matching
 

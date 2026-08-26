@@ -92,6 +92,8 @@ quyết định cuối cùng và lý do kỹ thuật của nó.
 | ADR-074 | Bác bỏ cấu hình tắt DAWG/`textord_heavy_nr` cho Global Pass (Mục 4.1.C spec) | Accepted |
 | ADR-075 | Cô lập 3 giai đoạn cải thiện OCR khi thực nghiệm | Accepted |
 | ADR-076 | Pass 1 dùng `vie`/tessdata_best; Pass 2 dùng `eng`/tessdata_fast + PSM=8 | Accepted |
+| ADR-077 | ROI Preprocess riêng cho Pass 2 (`_apply_clahe_sharpen` dùng chung + `ROI_PREPROCESS_*`) — chốt tham số qua thực nghiệm 103 PDF/412 field | Accepted (điều kiện: `INTER_CUBIC`, `ROI_UPSCALE_FACTOR=1.5` — xem Known Issues nếu source chưa khớp) |
+| ADR-078 | Hoãn xây `ROI_UPSCALE_FACTOR = f(bbox.height)`; giữ hằng số `1.5` cho đến khi có bộ PDF đa dạng font hơn | Accepted (deferred) |
 
 ------------------------------------------------------------------------
 
@@ -2246,3 +2248,102 @@ Xác nhận trong implementation: `config.py::ROI_TESSDATA_DIR`,
 `core/domain/constants.py::OCR.ROI_LANG`,
 `core/extraction/ocr_engine.py::recognize()` và
 `recognize_numeric_roi()`.
+
+------------------------------------------------------------------------
+
+## ADR-077 --- ROI Preprocess Riêng Cho Pass 2, Tách Khỏi `_preprocess()` Dùng Chung
+
+**Status:** Accepted (điều kiện thực nghiệm: `interpolation=INTER_CUBIC`,
+`ROI_UPSCALE_FACTOR=1.5` — xem Known Issues nếu 2 điều kiện này chưa
+khớp với main/production tại thời điểm áp dụng)
+
+Phát hiện qua thực nghiệm cô lập `ROI_UPSCALE_FACTOR` (tắt hẳn
+`_preprocess()` ở Pass 2 để loại nhiễu): tắt preprocess làm tăng rõ
+rệt số case nhầm lẫn hình dạng chữ số (0↔6↔8, 2↔7) trên ROI —
+chứng minh CLAHE+Sharpen có đóng góp thật cho chất lượng Pass 2, dù
+tham số cũ (`OCR.PREPROCESS_*`, tinh chỉnh cho ảnh toàn trang ~3000+px)
+không tối ưu cho ROI (thường ~100px chiều cao sau upscale).
+
+Nguyên nhân tham số Pass 1 không phù hợp Pass 2:
+`PREPROCESS_CLAHE_TILE_GRID_SIZE=(8,8)` trên ROI ~100-200px khiến mỗi
+ô lưới CLAHE chỉ còn ~15-25px — suy biến từ "tăng contrast cục bộ"
+thành xử lý gần từng pixel, khuếch đại nhiễu thay vì làm rõ nét.
+
+Giải pháp: tách `_preprocess()` thành 1 hàm lõi tham số hóa
+(`_apply_clahe_sharpen()`, nhận đủ 4 tham số CLAHE/Sharpen) + 2
+wrapper: `_preprocess()` (Pass 1, gọi với `OCR.PREPROCESS_*` — hành vi
+không đổi so với trước patch) và `_preprocess_roi()` (Pass 2, gọi với
+4 hằng số mới `OCR.ROI_PREPROCESS_*`).
+
+Phương pháp thực nghiệm (ghi chi tiết đầy đủ trong
+`ROI_PREPROCESS_EXPERIMENT_LOG.md`, không lặp lại ở đây theo Rule 14):
+cô lập triệt để theo Rule 16 — cố định `ROI_UPSCALE_FACTOR=1.5`,
+`INTER_CUBIC`, Pass 1 không đổi; dò riêng CLAHE (Sharpen tắt) rồi mới
+dò Sharpen (CLAHE cố định). Ghi 3 nhóm số liệu mỗi vòng theo đúng yêu
+cầu Rule 16 (sửa đúng / vẫn sai / hồi quy), tách biệt tuyệt đối field
+từ Nhóm 1 (Pass 1 sai, có GT xác minh thủ công) và field Pass 1 vốn
+đúng (GT ngầm định = `anchor.text`).
+
+Kết quả: trên bộ 103 PDF / 412 field DECIMAL nguồn OCR, Pass 1
+sai 7/412 field (Nhóm 1). Sau khi chốt CLAHE + Sharpen: sửa đúng
+7/7, còn 1 hồi quy mới (field Pass 1 vốn đúng bị Pass 2 làm sai) —
+tổng 411/412. Field hồi quy còn lại (GT='75,585', Pass 2 trả
+'75,5865' — dư 1 chữ số 6) do chính CLAHE gây ra, không sửa được
+bằng Sharpen — ghi nhận Known Issue, chưa xử lý (xem
+`PROJECT_CONTEXT.md` §14).
+
+Giá trị chốt:
+
+```python
+ROI_PREPROCESS_CLAHE_CLIP_LIMIT = 1.5
+ROI_PREPROCESS_CLAHE_TILE_GRID_SIZE = (2, 2)
+ROI_PREPROCESS_SHARPEN_SIGMA = 0.6
+ROI_PREPROCESS_SHARPEN_AMOUNT = 0.4
+```
+
+Phát hiện phụ quan trọng (chưa xử lý, thuộc Pass 1 — xem ADR riêng
+nếu điều tra ở phiên sau): toàn bộ 6/7 field lỗi glyph gốc của Pass 1
+(trước khi có Pass 2) đều có dạng chữ số 6/8 bị đọc nhầm thành 0,
+và tất cả xảy ra đúng tại vị trí ngay sau dấu phẩy phân cách hàng
+nghìn (,) — xác nhận qua đối chiếu tần suất 6/8 tại đúng vị trí
+này giữa subtotal/vat_amount/total_amount là tương đương nhau
+(loại trừ giả thuyết "lỗi đặc thù riêng field vat_amount"; loại trừ
+cả giả thuyết cỡ chữ, độ đậm nét, và dấu kẻ bảng liền kề — đã kiểm tra
+trực tiếp qua bbox.height đồng nhất 104px và ảnh debug ROI). Trên bộ
+test mở rộng, mẫu hình mở rộng thêm case 7 bị đọc sai, vẫn giữ đúng
+vị trí "ngay sau dấu phẩy". Nguyên nhân gốc CHƯA xác định — nghi vấn
+kỹ thuật: ranh giới phân đoạn (segmentation) giữa glyph dấu phẩy và
+chữ số kế tiếp là vùng nhạy cảm nhất trong 1 chuỗi số đối với
+Tesseract. Đã xác nhận qua rà soát source: Pass 2 hoàn toàn độc lập với
+lỗi này (không dùng lại pixel/text đã qua xử lý của Pass 1, chỉ dùng
+chung normalized_bbox — vị trí hình học, không phải nội dung).
+
+Xác nhận trong implementation:
+`core/extraction/ocr_engine.py::OCREngine._apply_clahe_sharpen()`,
+`_preprocess()`, `_preprocess_roi()`, `recognize_numeric_roi()`;
+`core/domain/constants.py::OCR.ROI_PREPROCESS_*`.
+
+------------------------------------------------------------------------
+
+## ADR-078 --- Hoãn Xây Dựng `ROI_UPSCALE_FACTOR = f(bbox.height)`
+
+**Status:** Accepted (deferred sang phiên sau)
+
+Giả thuyết ban đầu: `ROI_UPSCALE_FACTOR` nên là hàm theo `bbox.height`
+(cỡ chữ) thay vì hằng số cố định, do quan sát hệ số "tối ưu" dịch
+chuyển giữa các vòng thực nghiệm trước khi cô lập đúng biến số (Rule
+16). Sau khi cô lập (`_preprocess()` tắt hẳn, `INTER_CUBIC` cố định),
+`ROI_UPSCALE_FACTOR=1.5` đạt 411/412 trên bộ 103 PDF/412 field.
+
+Quyết định hoãn: bộ PDF hiện tại (~10% quy mô mục tiêu, chưa đủ đa
+dạng font/cỡ chữ theo xác nhận của người dùng) không đủ bằng chứng để
+phân biệt 2 khả năng: (a) 1.5 phù hợp mọi field vì bộ test có phân bố
+cỡ chữ hẹp (chưa bộc lộ nhu cầu thích ứng), hay (b) 1.5 thật sự tổng
+quát tốt. Xây hàm height → factor trên dữ liệu chưa đủ đa dạng sẽ lặp
+lại đúng rủi ro đã gặp ở `_preprocess()` (tối ưu cho phân bố hẹp, không
+tổng quát). Quyết định: giữ `ROI_UPSCALE_FACTOR = 1.5` (hằng số) làm
+baseline, hoãn thiết kế hàm tới khi có bộ PDF mở rộng, đa dạng font
+hơn (người dùng xác nhận sẽ chuẩn bị ở phiên sau).
+
+Không có implementation nào để xác nhận (quyết định KHÔNG code ở
+phiên này).

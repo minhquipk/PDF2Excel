@@ -1505,3 +1505,179 @@ khi Assistant đề xuất dừng ở 71/72, yêu cầu làm rõ phạm vi "nhó
 nhóm 3" khi Assistant lẫn lộn) - đối xứng vai trò người dùng đã thể hiện
 ở Session 2026-08-13 (bác bỏ 2 đề xuất kỹ thuật của Assistant với lý do
 xác đáng).
+
+------------------------------------------------------------------------
+
+# Session [ngày] — Two-Pass ROI OCR: Tách ROI Preprocess, Điều Tra Lỗi Glyph Pass 1
+
+## Mục tiêu
+
+Tiếp tục `OCR_ACCURACY_SPECIFICATION.md` (dở dang từ Session 2026-08-17
+đến 2026-08-21). Đầu phiên: đối chiếu định kỳ tài liệu vs source (Rule
+15) trước khi tiếp tục — phát hiện 5 điểm lệch pha giữa `PROJECT_CONTEXT.md`/
+ADR-076 và source thật.
+
+## Hoàn thành
+
+Đối chiếu Rule 15 (5 điểm lệch, 2 điểm xử lý ngay — `excel_mapping.json`
+là cấu hình test có chủ đích, `THREAD_HINT_FORMAT` đã tự dọn; 3 điểm
+còn lại — `ROI_UPSCALE_FACTOR`, interpolation, `_preprocess` dùng
+chung Pass 1/2 — xử lý trong chính phiên này). Tách `_apply_clahe_sharpen()`
++ `_preprocess_roi()`. Chốt `ROI_PREPROCESS_*` qua thực nghiệm cô lập
+(Rule 16) trên 103 PDF/412 field. Điều tra và loại trừ nhiều giả
+thuyết cho lỗi glyph Pass 1.
+
+## Quyết định kiến trúc
+
+→ ADR-077, ADR-078.
+
+## Bối cảnh: Rule 15 — đối chiếu tài liệu vs source đầu phiên
+
+5 điểm lệch phát hiện: (1) `ROI_UPSCALE_FACTOR` source=`2.0` vs tài
+liệu mô tả `1.25`; (2) `excel_mapping.json::table` = `"Table1"` vs tài
+liệu ghi `"tblInvoices"` — người dùng xác nhận đây là cấu hình test có
+chủ đích, không phải sai lệch cần sửa; (3) `UIText.THREAD_HINT_FORMAT`
+tồn tại trong source dù nhật ký ghi đã xóa — người dùng xác nhận đã tự
+dọn, bỏ qua; (4) `recognize_numeric_roi()` dùng `INTER_LINEAR` thay vì
+`INTER_CUBIC` theo đặc tả gốc — không có ADR xác nhận thay đổi; (5)
+`_preprocess()` (CLAHE+Sharpen) được gọi cho cả Pass 1 và Pass 2 dùng
+chung tham số, không có trong đặc tả gốc Mục 3.1 (chỉ mô tả Pass 2 gồm
+Crop → Upscale → Tesseract). Người dùng xác nhận (1)(4)(5) là các thay
+đổi có chủ đích sẽ giải quyết trong phiên này, (2)(3) bỏ qua.
+
+## Bối cảnh: cơ chế confound giữa `ROI_UPSCALE_FACTOR` và `_preprocess()`
+
+Người dùng quan sát tập hệ số upscale "tốt" (`{1.25, 1.3, 1.45, 1.85,
+1.9}`) dịch chuyển/mở rộng qua các vòng thực nghiệm khác nhau, tự đặt
+câu hỏi liệu upscale phụ thuộc thuộc tính ROI (kích thước/chất lượng)
+hay do yếu tố khác chưa kiểm soát. Phân tích: `PREPROCESS_CLAHE_TILE_GRID_SIZE=(8,8)`
+và `SHARPEN_SIGMA=1.0` (tuyệt đối, tính bằng pixel) tinh chỉnh cho ảnh
+toàn trang — áp nguyên cho ROI nhỏ hơn nhiều bậc độ lớn tạo hiệu ứng
+phi tuyến trộn lẫn với chính hệ số upscale, khiến "hệ số tốt" đo được
+thực chất là 1 biến ghép (upscale × preprocessing effect). Đề xuất cô
+lập: tắt `_preprocess()` + cố định `INTER_CUBIC` trước khi dò upscale.
+Người dùng xác nhận sau khi cô lập, tập hệ số hội tụ ổn định — nhưng
+đồng thời phát hiện số field bị Pass 2 làm xấu Pass 1 (regression) TĂNG
+khi tắt `_preprocess()` — bằng chứng CLAHE/Sharpen có giá trị thật cho
+Pass 2, dù tham số cũ (dùng chung Pass 1) chưa tối ưu.
+
+## Bối cảnh: thiết kế lại `ROI_PREPROCESS_*` — tách khỏi Pass 1
+
+Đồng ý hướng tách `_preprocess()` thành hàm lõi tham số hóa
+(`_apply_clahe_sharpen()`) dùng chung, cộng 2 wrapper riêng biệt.
+Người dùng chọn `SHARPEN_SIGMA` cố định (không phụ thuộc
+`ROI_UPSCALE_FACTOR`) để giữ 2 thực nghiệm (upscale, preprocess) tách
+biệt hoàn toàn — đúng Rule 16, tránh lặp lại lỗi confound vừa phát
+hiện.
+
+## Bối cảnh: điều chỉnh chiến lược ghi chép thực nghiệm — 3 nhóm
+
+Kế hoạch ban đầu (dựng bảng Ground Truth cho toàn bộ field test) không
+khả thi khi người dùng mở rộng bộ test lên 103 PDF/412 field. Người
+dùng đề xuất tối ưu: chỉ dựng GT cho Nhóm 1 (field Pass 1 sai — số
+lượng nhỏ, khả thi xác minh tay); Nhóm 3 (theo dõi sau mỗi vòng dò
+tham số) chỉ cần lọc field có `anchor != roi`, vì hồi quy (field Pass 1
+đúng bị Pass 2 làm sai) chỉ có thể xảy ra khi 2 chuỗi khác nhau — điều
+kiện lọc này bắt được MỌI biến động mà không cần duyệt lại toàn bộ 412
+field mỗi vòng. Cơ chế này được Assistant xác nhận đúng đắn về logic
+trước khi dựng bảng mẫu (`ROI_PREPROCESS_EXPERIMENT_LOG.md`).
+
+Trong quá trình dùng bảng mẫu, phát hiện 1 lỗ hổng nhỏ trong định
+nghĩa filter gốc (field Nhóm 1 mà `anchor == roi_text` sau khi Pass 2
+tái tạo đúng lỗi cũ — về lý thuyết không thỏa điều kiện lọc nhưng vẫn
+cần ghi nhận "vẫn sai") — điều chỉnh: filter `anchor != roi` chỉ áp
+dụng cho phần 405 field Pass 1-đúng (nơi tiết kiệm công sức thật sự);
+7 field Nhóm 1 luôn được đánh giá đầy đủ mỗi vòng bất kể `anchor` có
+đổi hay không, vì chi phí không đáng kể.
+
+Người dùng cũng đặt câu hỏi làm lộ mâu thuẫn trong 1 ghi chú ban đầu
+của Assistant (mốc so sánh "kết quả vòng trước" cho phân loại kết quả
+Phần 2, mâu thuẫn khi Phần 1 đã sửa đúng 100% Nhóm 1) — Assistant thừa
+nhận lỗi, sửa lại: mốc so sánh LUÔN LUÔN là GT tuyệt đối/`anchor.text`
+(GT ngầm định), không phải kết quả vòng liền trước — nhất quán qua mọi
+vòng.
+
+## Bối cảnh: kết quả thực nghiệm — điều tra lỗi glyph Pass 1
+
+Sau khi chốt `ROI_PREPROCESS_*` (`411/412`), người dùng quan sát: gần
+như toàn bộ (>98%) field lỗi ban đầu (Nhóm 1) thuộc `vat_amount`
+(field kề cuối trong bảng chi tiết), trong khi `total_amount` (cỡ chữ
+lớn hơn, in đậm) chưa từng lỗi — đặt câu hỏi liệu điều này có ý nghĩa
+gì.
+
+**3 giả thuyết lần lượt bị loại trừ bằng bằng chứng trực tiếp từ người
+dùng:**
+1. Vị trí kề cận đường kẻ bảng (ROI dính viền) — người dùng xác nhận
+   không có dòng nào bị ảnh hưởng bởi dấu kẻ ngang.
+2. Cỡ chữ (`bbox.height`) — người dùng xác nhận TOÀN BỘ ROI có
+   `bbox.height = 104px` như nhau, bất kể field/PDF nào.
+3. Độ đậm nét (bold) — chỉ `total_amount` in đậm trong 4 field DECIMAL
+   (`subtotal`/`vat_rate`/`vat_amount`/`total_amount`), nhưng lỗi luôn
+   rơi vào `vat_amount` (không đậm) — không khớp giả thuyết.
+
+**Giả thuyết thứ 4 (Assistant đề xuất, cũng bị loại):** giả tương quan
+do chọn mẫu ngẫu nhiên (tần suất chữ số `6`/`8` trong TOÀN BỘ giá trị
+field khác nhau giữa các field). Người dùng phản bác bằng dữ liệu quan
+sát trực tiếp: tần suất `6`/`8` (ở BẤT KỲ vị trí nào trong giá trị) là
+tương đương giữa `subtotal`/`vat_amount`/`total_amount` (riêng
+`vat_rate` là ngoại lệ, chỉ chứa `{5,10}` — không liên quan cấu trúc
+lỗi này).
+
+**Phát hiện đúng (từ chính người dùng, dựa trên nhìn lại pattern lỗi
+cụ thể):** toàn bộ 6/7 case lỗi glyph có dạng `6`/`8`→`0`, và tất cả
+xảy ra ĐÚNG tại vị trí ngay sau dấu phẩy phân cách hàng nghìn (`,`) —
+không phải bất kỳ đâu trong chuỗi. Người dùng kiểm chứng thêm: tần
+suất `6`/`8` ĐÚNG Ở VỊ TRÍ này (không phải toàn giá trị) cũng tương
+đương giữa 3 field — bác bỏ cả giả thuyết chọn mẫu. Trên bộ test mở
+rộng (quy mô lớn hơn), mẫu hình xác nhận lặp lại, có thêm case lỗi số
+`7`, vẫn giữ đúng vị trí "ngay sau dấu phẩy".
+
+**Kết luận (chưa xác định nguyên nhân gốc, ghi nhận Known Issue):**
+đây là hiện tượng thật, có cấu trúc rõ ràng (vị trí + hướng lỗi nhất
+quán), nhưng KHÔNG giải thích được bằng field/vị trí/cỡ chữ/độ đậm —
+nghi vấn kỹ thuật hướng tới cơ chế phân đoạn (segmentation) ranh giới
+dấu phẩy-chữ số của Tesseract, chưa verify. Thuộc phạm vi Pass 1
+(`recognize()`), ngoài phạm vi Two-Pass ROI (Pass 2) đang làm.
+
+Người dùng đặt câu hỏi làm rõ: lỗi Pass 1 có ảnh hưởng tới Pass 2
+không? Assistant xác nhận qua rà soát source: KHÔNG — `recognize_numeric_roi()`
+xây dựng lại hoàn toàn từ `page_image` thô (`_to_numpy_array()`,
+`_deskew()`, preprocess, Tesseract đều chạy độc lập với Pass 1), chỉ
+dùng chung `normalized_bbox` (vị trí hình học, không phải nội dung
+text/pixel đã xử lý). Người dùng tự xác nhận đúng qua đọc trực tiếp
+source trước khi Assistant trả lời — khớp kết luận.
+
+## Quyết định đóng phiên
+
+Người dùng quyết định: (1) kết thúc thực nghiệm Pass 2, ghi nhận known
+issues thuộc Pass 1 (lỗi glyph `6/8→0` cạnh dấu phẩy) — CHƯA xử lý; (2)
+hàm `ROI_UPSCALE_FACTOR = f(bbox.height)` và điều tra nguyên nhân gốc
+Pass 1 — dời sang phiên sau; (3) mở rộng/đa dạng hóa bộ PDF test — người
+dùng tự chuẩn bị, trình bày ở phiên sau.
+
+## Vướng mắc gặp phải
+
+Không có vướng mắc kỹ thuật ngoài dự kiến — toàn bộ nội dung phiên là
+thảo luận/thực nghiệm có kiểm soát, với nhiều lần người dùng tự phát
+hiện bằng chứng bác bỏ giả thuyết của Assistant (điểm nhấn: giả thuyết
+"chọn mẫu ngẫu nhiên" và phát hiện đúng vị trí lỗi "ngay sau dấu phẩy"
+đều do người dùng tự đưa ra dựa trên dữ liệu quan sát trực tiếp, không
+phải Assistant suy luận đúng ngay từ đầu).
+
+## Validation
+
+`ROI_PREPROCESS_*`: verify qua thực nghiệm cô lập trên 103 PDF/412
+field, kết quả `411/412`, log chi tiết theo phương pháp 3 nhóm trong
+`ROI_PREPROCESS_EXPERIMENT_LOG.md`. Ranh giới độc lập Pass 1/Pass 2:
+verify qua rà soát trực tiếp source (`recognize_numeric_roi()` vs
+`recognize()`).
+
+## Phiên tiếp theo
+
+Ưu tiên theo đúng thứ tự người dùng đã chốt: (1) mở rộng bộ PDF test
+(người dùng chuẩn bị, đa dạng font hơn); (2) dựa trên bộ mới, xây dựng
+và verify hàm `ROI_UPSCALE_FACTOR = f(bbox.height)` (ADR-078); (3) điều
+tra nguyên nhân gốc lỗi glyph Pass 1 (`6/8→0` cạnh dấu phẩy). Đồng thời
+cần xử lý khoảng trống đồng bộ đã ghi nhận: `ROI_UPSCALE_FACTOR`/
+interpolation trong `constants.py`/`ocr_engine.py` (source) chưa khớp
+điều kiện đã verify của ADR-077 (`1.5`/`INTER_CUBIC`).

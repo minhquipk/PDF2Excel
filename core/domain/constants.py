@@ -121,11 +121,27 @@ class OCR:
     # --- Median Denoising (Tầng 1, Global Pass) ---
     PREPROCESS_MEDIAN_KERNEL = 3
 
+    # --- Preprocess riêng cho ROI (Pass 2) ---
+    # KHÔNG dùng chung tham số với Pass 1 (PREPROCESS_CLAHE_*/
+    # PREPROCESS_SHARPEN_*): ROI có kích thước nhỏ hơn nhiều so với ảnh
+    # toàn trang (VD ~104px chiều cao trước upscale). Áp nguyên tham số
+    # Pass 1 (tileGridSize=(8,8), tinh chỉnh cho ảnh ~3000+px) khiến mỗi
+    # ô CLAHE chỉ còn vài chục pixel - suy biến thành xử lý gần từng
+    # pixel, khuếch đại nhiễu thay vì tăng contrast cục bộ có ý nghĩa.
+    # Xác nhận qua thực nghiệm: tắt _preprocess() ở Pass 2 làm tăng rõ
+    # rệt số case nhầm lẫn hình dạng chữ số (0/6/8, 2/7) - Pass 1 dùng
+    # tham số cũ vẫn giảm thiểu được phần nào nhưng chưa tối ưu cho ROI.
+    # Giá trị khởi điểm dưới đây CHƯA qua thực nghiệm - cần tinh chỉnh.
+    ROI_PREPROCESS_CLAHE_CLIP_LIMIT = 1.5
+    ROI_PREPROCESS_CLAHE_TILE_GRID_SIZE = (2, 2)
+    ROI_PREPROCESS_SHARPEN_SIGMA = 0.6
+    ROI_PREPROCESS_SHARPEN_AMOUNT = 0.4
+
     # --- Two-Pass ROI OCR (Tầng 2, chỉ áp dụng ValueType.DECIMAL) ---
     # Pass 1 dùng LANG=vie để đọc layout/anchor. ROI chỉ chứa số nên dùng
     # English fast model: đã cho kết quả tốt hơn cho glyph 0/6/8 trên tập test.
     ROI_LANG = "eng"
-    ROI_UPSCALE_FACTOR = 2.0
+    ROI_UPSCALE_FACTOR = 1.5
     ROI_PADDING_RATIO = 0.07  # % theo chiều cao bbox - giá trị khởi điểm, xem suy diễn dưới
 
     # Whitelist cho Pass 2 theo model. ``eng`` chủ đích loại hậu tố tiền tệ:
@@ -189,7 +205,6 @@ class UIText:
 
     # Thread Selector
     THREAD_COUNT = "Threads"
-    THREAD_HINT_FORMAT = "Detected {cores} CPU core(s). Recommended: {recommended}."
 
 
 class PDFDetection:
