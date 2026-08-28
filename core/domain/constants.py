@@ -141,7 +141,7 @@ class OCR:
     # Pass 1 dùng LANG=vie để đọc layout/anchor. ROI chỉ chứa số nên dùng
     # English fast model: đã cho kết quả tốt hơn cho glyph 0/6/8 trên tập test.
     ROI_LANG = "eng"
-    ROI_UPSCALE_FACTOR = 1.5
+    ROI_UPSCALE_FACTOR = 2.25
     ROI_PADDING_RATIO = 0.07  # % theo chiều cao bbox - giá trị khởi điểm, xem suy diễn dưới
 
     # Whitelist cho Pass 2 theo model. ``eng`` chủ đích loại hậu tố tiền tệ:

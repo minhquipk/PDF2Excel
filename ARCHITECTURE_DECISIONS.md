@@ -93,7 +93,9 @@ quyết định cuối cùng và lý do kỹ thuật của nó.
 | ADR-075 | Cô lập 3 giai đoạn cải thiện OCR khi thực nghiệm | Accepted |
 | ADR-076 | Pass 1 dùng `vie`/tessdata_best; Pass 2 dùng `eng`/tessdata_fast + PSM=8 | Accepted |
 | ADR-077 | ROI Preprocess riêng cho Pass 2 (`_apply_clahe_sharpen` dùng chung + `ROI_PREPROCESS_*`) — chốt tham số qua thực nghiệm 103 PDF/412 field | Accepted (điều kiện: `INTER_CUBIC`, `ROI_UPSCALE_FACTOR=1.5` — xem Known Issues nếu source chưa khớp) |
-| ADR-078 | Hoãn xây `ROI_UPSCALE_FACTOR = f(bbox.height)`; giữ hằng số `1.5` cho đến khi có bộ PDF đa dạng font hơn | Accepted (deferred) |
+| ADR-078 | Hoãn xây `ROI_UPSCALE_FACTOR = f(bbox.height)`; giữ hằng số `1.5` cho đến khi có bộ PDF đa dạng font hơn | Accepted (deferred) → Superseded by ADR-080 |
+| ADR-079 | Fallback anchor cho field DECIMAL khi Pass 1 phá vỡ cấu trúc chuỗi (không lọc `value_pattern` khi chọn anchor dự phòng) | Accepted |
+| ADR-080 | Chốt `ROI_UPSCALE_FACTOR = 2.25` (hằng số toàn cục) — bác bỏ giả thuyết `f(bbox.height)` bằng thực nghiệm trên Bộ 2 | Accepted (supersedes ADR-078) |
 
 ------------------------------------------------------------------------
 
@@ -2347,3 +2349,122 @@ hơn (người dùng xác nhận sẽ chuẩn bị ở phiên sau).
 
 Không có implementation nào để xác nhận (quyết định KHÔNG code ở
 phiên này).
+
+------------------------------------------------------------------------
+
+## ADR-079 --- Fallback Anchor Cho Field DECIMAL Khi Pass 1 Phá Vỡ Cấu Trúc Chuỗi
+
+**Status:** Accepted
+
+**Phát hiện qua debug thực nghiệm:** Pass 1 OCR đôi khi đọc nhầm 1 ký tự
+số thành ký tự không phải số/dấu phân cách (VD `"1,234,789"` →
+`"1,234,/89"`, chữ số `7` bị đọc thành `/`) — lỗi làm HỎNG CẤU TRÚC
+chuỗi đủ để token không còn khớp `value_pattern`.
+
+`TemplateMatcher._extract_field_value()` (bản trước patch) lọc
+`candidates` theo `value_pattern` TRƯỚC khi chọn `anchor`:
+
+```python
+matches = [token for token in candidates if pattern.match(token.text)]
+if not matches:
+    return None
+```
+
+Khi `matches` rỗng, hàm trả `None` ngay — `anchor` chưa từng được xác
+lập, do đó `_resolve_decimal_value()` (và Pass 2 - ADR-070/071, cơ chế
+được thiết kế CHÍNH để sửa đúng loại lỗi OCR này) **chưa từng được
+gọi**. Đây là 1 coupling chưa được xét lại khi Two-Pass được thêm vào
+kiến trúc Single-Pass gốc: bộ lọc `value_pattern` vốn viết cho mục
+đích loại token rác (VD dấu `":"`, xem ADR-044/`TEMPLATE_AUTHORING_GUIDE.md`
+§7.1), không tính tới việc Pass 2 cần 1 anchor "đủ gần vị trí" chứ
+không cần "đã đúng nội dung".
+
+**3 phương án đã cân nhắc:**
+- A: nới `value_pattern` chấp nhận thêm ký tự nhiễu — bị loại (không
+  liệt kê hết được mọi ký tự Tesseract có thể nhầm; đi ngược quy tắc
+  "pattern không quá lỏng" của `TEMPLATE_AUTHORING_GUIDE.md` §7.1).
+- B: bỏ hẳn filter `value_pattern` khi chọn anchor cho MỌI field
+  DECIMAL nguồn OCR — bị loại (đổi hành vi chọn anchor cho cả các field
+  vốn không có vấn đề gì; rủi ro chọn nhầm token khác trong window rộng,
+  VD `subtotal`/`total_amount` có `max_distance=0.85`).
+- C (đã chọn): fallback 2 tầng — giữ nguyên đường lọc `value_pattern`
+  làm ưu tiên 1 (không đổi hành vi path bình thường); CHỈ khi `matches`
+  rỗng VÀ field là `DECIMAL`, fallback chọn anchor từ candidate nguồn
+  OCR (không lọc pattern) gần Key nhất, giao cho `_resolve_decimal_value()`
+  xử lý — Pass 2 tự validate lại `roi_text` theo `value_pattern` như
+  ADR-071 đã có sẵn.
+
+**Ràng buộc bổ sung trong C:** fallback chỉ xét candidate có
+`source == "ocr"`. Lý do: token nguồn `"digital"` không có `page_image`/
+ROI để Pass 2 sửa lại (`_resolve_decimal_value()` fallback thẳng về
+`anchor.text` khi `anchor.source != "ocr"`) — nếu để fallback chọn nhầm
+1 token digital rác làm anchor, không có cơ chế nào sửa lại, biến 1 lỗi
+"trả `None`" (an toàn, dễ phát hiện qua Report — ADR-032/033) thành 1
+lỗi "trả giá trị sai không có cách phát hiện" (silent corruption, cùng
+rủi ro đã ghi nhận ở ADR-052).
+
+**Giới hạn đã biết, KHÔNG thuộc phạm vi patch này (xem thêm Mục Known
+Issues, `PROJECT_CONTEXT.md` §14):** nếu Pass 1 sai nhưng VẪN đúng cấu
+trúc DECIMAL (VD `"206"` → `"200"`), patch này không liên quan (case đó
+`matches` không rỗng ngay từ đầu, Pass 2 vẫn được gọi qua path cũ). Vấn
+đề thật nằm ở bước validate `roi_text` (ADR-071) — chỉ kiểm tra CẤU
+TRÚC, không kiểm tra được "đúng trị số". Nếu Pass 2 cũng đọc nhầm cùng
+kiểu lỗi (VD lỗi glyph `6/8→0` đã ghi nhận ở ADR-077), sai sẽ lọt qua
+mà không có tín hiệu nào phát hiện được — cùng bản chất "silent
+corruption" của ADR-052, chưa có giải pháp.
+
+Xác nhận trong implementation:
+`core/parsing/template/template_matcher.py::TemplateMatcher._extract_field_value()`.
+
+------------------------------------------------------------------------
+
+## ADR-080 --- Chốt `ROI_UPSCALE_FACTOR = 2.25` (Hằng Số Toàn Cục), Bác Bỏ `f(bbox.height)`
+
+**Status:** Accepted (supersedes ADR-078)
+
+Thực hiện việc tồn đọng của ADR-078 trên **Bộ 2** (150 PDF/dải font,
+đủ đa dạng font 8-12 — khác Bộ 1 chỉ có font 11-12 đã dùng ở ADR-077,
+vốn là lý do ADR-078 phải hoãn: "bộ test có phân bố cỡ chữ hẹp").
+
+**Phương pháp (4 giai đoạn, Rule 16):**
+1. Khảo sát phân bố `bbox_height_px` theo `font_label` — xác nhận tăng
+   đơn điệu theo font (~40px ở font 8 → ~61px ở font 12), không phát
+   hiện field khác height trong cùng PDF. Phát hiện phụ quan trọng:
+   BOLD làm `bbox_height_px` tăng đáng kể trong cùng `font_label` (VD
+   59px→75px) — biến gây nhiễu chưa kiểm soát nếu nhóm theo nhãn font.
+   Quyết định: đổi trục nhóm ở Giai đoạn 0/2 sang DẢI `bbox_height_px`
+   thực đo, không nhóm theo `font_label` (nhãn font chỉ còn vai trò
+   kiểm chứng phụ). Hậu tố VND gây sai lệch < 6% — chấp nhận, không xử
+   lý riêng.
+2. Baseline (`1.5` cố định, toàn Bộ 2 — 3000 field): Nhóm 1 (Pass 1
+   sai) = 45/3000, Pass 2 sửa đúng 45/45 (100%). Nhóm 3 hồi quy (Pass 1
+   đúng nhưng Pass 2 làm sai) = 23 field.
+3. Dò 7 giá trị hệ số (`1.0`→`2.5`) × 5 dải height: phát hiện Nhóm 1
+   đúng/tổng gần như BÃO HÒA (đạt tối đa) ở hầu hết mọi hệ số — không
+   phân biệt được hệ số qua chỉ tiêu này. Chỉ tiêu phân biệt thực sự là
+   Nhóm 3 hồi quy — nhưng hệ số tốt nhất theo từng dải height KHÔNG có
+   xu hướng đơn điệu/quy luật rõ ràng (`1.0 → 2.5 → 1.25 → 1.25 → 2.5`
+   theo height tăng dần) — dấu hiệu fit theo nhiễu mẫu (số đếm hồi quy
+   tuyệt đối rất nhỏ, 2-10 field/dải trên nền ~600 field/dải), không
+   phải quy luật vật lý thật.
+4. Từ phát hiện (3), kiểm định giả thuyết đơn giản hơn TRƯỚC khi fit
+   hàm (Rule 9): cộng dồn hồi quy theo hệ số trên toàn bộ 5 dải — `1.0`
+   và `2.25` đồng hạng thấp nhất (tổng = 18), thấp hơn cả baseline
+   `1.5` (tổng = 23). Verify trên toàn Bộ 2: cả 2 giữ 45/45 Nhóm 1, hồi
+   quy 18/18 — hòa tuyệt đối.
+
+**Phá thế hòa `1.0` vs `2.25` — chọn `2.25`:**
+- `2.25` có phương sai hồi quy thấp hơn giữa các dải font (~0.64 so với
+  ~1.04 của `1.0`) — hiệu quả đồng đều hơn trên toàn dải 8-12.
+- `1.0` vô hiệu hóa hoàn toàn cơ chế Super-Resolution mà
+  `OCR_ACCURACY_SPECIFICATION.md` Mục 3.2.B đặt làm nền tảng thiết kế
+  — rủi ro mất "buffer" phóng đại nếu DPI/khổ giấy thay đổi ở v2.0
+  (kế hoạch DPI thích ứng, ADR-053).
+
+**Kết luận (khác giả thuyết ban đầu của ADR-078, dựa trên bằng chứng
+thực nghiệm — đối xứng cách ADR-074 từng bác bỏ 1 phần đề xuất spec
+gốc):** KHÔNG cần `f(bbox.height)`. `ROI_UPSCALE_FACTOR` giữ là hằng
+số, đổi giá trị `1.5` → `2.25`. Việc tồn đọng ADR-078 coi như đã đóng.
+
+Xác nhận trong implementation:
+`core/domain/constants.py::OCR.ROI_UPSCALE_FACTOR`.

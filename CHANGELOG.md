@@ -721,3 +721,39 @@ chính thức — tài liệu công tác riêng của phiên này). Kết quả:
   thực nghiệm ADR-077 chạy dưới `1.5`/`INTER_CUBIC`. Cần đồng bộ
   `constants.py`/`ocr_engine.py` trước khi coi ADR-077 là đã áp dụng
   đúng điều kiện verify trên production.
+
+------------------------------------------------------------------------
+
+## 2026-08-29 — Fallback Anchor Cho DECIMAL & Chốt `ROI_UPSCALE_FACTOR`
+
+### Fixed
+- `core/parsing/template/template_matcher.py::TemplateMatcher._extract_field_value()`:
+  field DECIMAL nguồn OCR mà Pass 1 phá vỡ cấu trúc chuỗi (không token
+  nào khớp `value_pattern`) nay có anchor dự phòng (chọn trong candidate
+  nguồn OCR, không lọc pattern) để Pass 2 vẫn được kích hoạt sửa lại —
+  trước patch, Pass 2 chưa từng được gọi trong case này. → ADR-079.
+
+### Changed
+- `core/domain/constants.py::OCR.ROI_UPSCALE_FACTOR`: `1.5` → `2.25`
+  (hằng số toàn cục, verify trên toàn Bộ 2 — 3000 field/150 PDF mỗi
+  dải/font 8-12). → ADR-080 (supersedes hướng `f(height)` của ADR-078).
+
+### Quyết định kiến trúc
+→ ADR-079, ADR-080.
+
+### Testing
+Thực nghiệm 4 giai đoạn trên Bộ 2: khảo sát phân bố height theo font →
+baseline `1.5` (Nhóm 1 = 45/45 sau Pass 2, Nhóm 3 hồi quy = 23) → dò 7
+hệ số × 5 dải height (phát hiện Nhóm 1 bão hòa ở mọi hệ số, không có
+quy luật đơn điệu giữa height và hệ số tốt nhất) → test hằng số toàn
+cục `1.0` và `2.25` trên toàn Bộ 2: cả 2 đồng hạng tốt nhất (hồi quy
+18/23), chọn `2.25` do phương sai thấp hơn + giữ tinh thần
+Super-Resolution của spec gốc.
+
+### Known Issues còn lại (không đổi trong phiên này)
+- Lỗi glyph Pass 1 `6/8→0` cạnh dấu phẩy (ADR-077) — chưa điều tra.
+- 1 field hồi quy do CLAHE (ADR-077) — chưa giải quyết.
+- `TestCropRoi` lỗi thời từ ADR-073 — vẫn chưa viết lại.
+- Giới hạn "Pass 1/Pass 2 cùng đọc sai nhưng vẫn đúng cấu trúc" (VD
+  "206"→"200") — phát hiện qua thảo luận thiết kế ADR-079, chưa có
+  giải pháp (cùng bản chất ADR-052).

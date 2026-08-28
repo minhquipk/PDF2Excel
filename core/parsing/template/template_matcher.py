@@ -428,8 +428,17 @@ class TemplateMatcher:
         để field DECIMAL có thể kích hoạt Two-Pass ROI (_resolve_decimal_value)."""
         pattern = self._get_compiled_pattern(field_def.value_pattern)
         matches = [token for token in candidates if pattern.match(token.text)]
+
         if not matches:
-            return None
+            if field_def.value_type is not ValueType.DECIMAL:
+                return None
+
+            ocr_candidates = [t for t in candidates if t.source == "ocr"]
+            if not ocr_candidates:
+                return None
+
+            anchor = min(ocr_candidates, key=lambda t: TemplateMatcher._distance(t, key_token))
+            return self._resolve_decimal_value(anchor, field_def, extraction, page_index)
 
         anchor = min(matches, key=lambda t: TemplateMatcher._distance(t, key_token))
 
@@ -445,7 +454,6 @@ class TemplateMatcher:
             extraction: ExtractionResult,
             page_index: int,
     ) -> str:
-        """..."""
         if field_def.value_type is not ValueType.DECIMAL or anchor.source != "ocr":
             return anchor.text
 
@@ -476,6 +484,10 @@ class TemplateMatcher:
                 debug_path = "(save failed)"
             print(f"[DEBUG-ROI] file={debug_path} field={field_def.field_name} "
                   f"anchor.text={anchor.text!r} roi_text={roi_text!r}")
+            # DEBUG TẠM THỜI - đo bbox_height_px cho thực nghiệm ROI_UPSCALE_EXPERIMENT_LOG.md
+            y0, y1 = anchor.normalized_bbox[1], anchor.normalized_bbox[3]
+            bbox_height_px = (y1 - y0) * page_image.height
+            print(f"[DEBUG-HEIGHT] field={field_def.field_name} bbox_height_px={bbox_height_px:.2f}")
 
         # MỚI - validate roi_text khớp value_pattern trước khi tin tưởng Pass 2.
         # Nếu không, Pass 2 (context hẹp hơn Pass 1) có thể trả về rác không rỗng,

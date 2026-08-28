@@ -1681,3 +1681,172 @@ tra nguyên nhân gốc lỗi glyph Pass 1 (`6/8→0` cạnh dấu phẩy). Đ�
 cần xử lý khoảng trống đồng bộ đã ghi nhận: `ROI_UPSCALE_FACTOR`/
 interpolation trong `constants.py`/`ocr_engine.py` (source) chưa khớp
 điều kiện đã verify của ADR-077 (`1.5`/`INTER_CUBIC`).
+
+------------------------------------------------------------------------
+
+# Session 2026-08-29 — Fallback Anchor Cho DECIMAL & Chốt ROI_UPSCALE_FACTOR (bác bỏ f(height))
+
+## Mục tiêu
+
+Tiếp tục `OCR_ACCURACY_SPECIFICATION.md`: (1) xử lý case Pass 1 phá vỡ cấu
+trúc chuỗi số khiến Pass 2 không được kích hoạt; (2) triển khai việc tồn
+đọng ADR-078 — xây & verify `ROI_UPSCALE_FACTOR = f(bbox.height)` trên Bộ
+2 (đa dạng font 8-12).
+
+## Hoàn thành
+
+Patch fallback anchor cho field DECIMAL (ADR-079). Thực nghiệm đầy đủ 4
+giai đoạn trên Bộ 2 dẫn tới kết luận NGƯỢC giả thuyết ban đầu của
+ADR-078: không cần `f(height)`, chốt hằng số toàn cục
+`ROI_UPSCALE_FACTOR = 2.25` (ADR-080).
+
+## Quyết định kiến trúc
+
+→ ADR-079, ADR-080.
+
+## Bối cảnh: phát hiện lỗ hổng thiết kế Two-Pass qua debug thực nghiệm
+
+Người dùng phát hiện: Pass 1 OCR `"1,234,789"` thành `"1,234,/89"` (ký tự
+`7` → `"/"`) — lỗi phá vỡ cấu trúc chuỗi đủ để token không còn khớp
+`value_pattern`. `TemplateMatcher._extract_field_value()` trả `None` ngay
+khi `matches` rỗng, chưa từng gọi `_resolve_decimal_value()` — Pass 2
+(thiết kế chính để sửa lỗi loại này) không có cơ hội chạy. Xác nhận đây
+là coupling chưa được xét lại khi ADR-070/071 thêm Two-Pass vào kiến trúc
+Single-Pass gốc (`value_pattern` filter vốn viết cho mục đích loại token
+rác kiểu dấu `":"`, không tính tới trường hợp Pass 2 cần 1 anchor "đủ
+gần" thay vì "đã đúng").
+
+3 phương án được thảo luận (A: nới `value_pattern`; B: bỏ hẳn filter khi
+chọn anchor cho mọi field DECIMAL; C: anchor 2 tầng, fallback không lọc
+pattern CHỈ khi `matches` rỗng). Chọn phương án C (phạm vi hẹp nhất,
+không đổi hành vi path bình thường).
+
+Trong lúc thiết kế C, thảo luận thêm liệu có nên tận dụng
+`field_def.value_type` sớm hơn (C1: chỉ quyết định fallback, giữ ưu tiên
+lọc pattern trước; C2: bỏ hẳn lọc pattern ngay từ đầu cho mọi field
+DECIMAL, giao validate hoàn toàn cho Pass 2). Chọn C1, kèm ràng buộc
+fallback chỉ xét candidate nguồn OCR (`source == "ocr"`) — tránh chọn
+nhầm token digital rác làm anchor (không có ROI để Pass 2 sửa lại, rủi ro
+thay lỗi "None dễ phát hiện" bằng lỗi "giá trị sai không phát hiện được",
+đúng bài học ADR-052 "silent corruption").
+
+## Bối cảnh: giới hạn đã biết của C1 — case "206"→"200"
+
+Người dùng đặt câu hỏi: nếu Pass 1 sai nhưng VẪN đúng cấu trúc DECIMAL
+(VD `"206"` → `"200"`), C1 có xử lý được không? Phân tích: KHÔNG liên quan
+tới C1 (case này `matches` không rỗng ngay từ đầu, Pass 2 vẫn được gọi
+bình thường qua path cũ) — vấn đề thật nằm ở bước validate `roi_text`
+trong `_resolve_decimal_value()` (ADR-071), vốn chỉ kiểm tra CẤU TRÚC,
+không kiểm tra được "đúng trị số". Nếu Pass 2 cũng đọc nhầm cùng kiểu lỗi
+(VD đúng lỗi glyph `6/8→0` đã ghi nhận ở ADR-077), sai sẽ lọt qua mà không
+có tín hiệu cấu trúc nào phát hiện được — cùng bản chất "silent
+corruption" của ADR-052. Quyết định: ghi nhận là Known Limitation riêng,
+KHÔNG mở rộng phạm vi C1 để xử lý (đúng Rule 9 — không mở rộng thay đổi
+vượt quá vấn đề đang giải quyết).
+
+## Bối cảnh: chuẩn bị thực nghiệm ROI_UPSCALE_FACTOR = f(height)
+
+2 bộ PDF test được xác nhận: Bộ 1 (đang dùng, chỉ font 11-12 — "phân bố
+hẹp" đúng như cảnh báo ADR-078) và Bộ 2 (font 8-12 đầy đủ, quy mô lớn
+hơn). Thống nhất PHẢI dùng Bộ 2 ngay từ đầu cho thực nghiệm này (dùng
+Bộ 1 trước rồi verify lại bằng Bộ 2 sẽ lãng phí công sức — kết quả từ 2
+điểm dữ liệu (font 11, font 12) không đủ suy ra dạng hàm).
+
+Thiết kế khung thực nghiệm 4 giai đoạn (khảo sát phân bố height theo
+`font_label` → baseline `1.5` cố định, xác định Nhóm 1/Nhóm 3 theo đúng
+phương pháp đã dùng ở ADR-077 → dò hệ số theo dải height → fit hàm +
+verify), ghi vào file mẫu `ROI_UPSCALE_EXPERIMENT_LOG.md` (working
+document, không thuộc 5 file nhật ký chính thức — cùng vai trò
+`ROI_PREPROCESS_EXPERIMENT_LOG.md` ở phiên trước). Người dùng tự chạy và
+ghi số liệu (lý do: khối lượng dữ liệu lớn tốn tài nguyên tính toán +
+thông tin nhạy cảm không tiện chia sẻ trực tiếp).
+
+## Bối cảnh: phát hiện bold là biến gây nhiễu chưa được kiểm soát
+
+Người dùng quan sát: cùng `font_label` vẫn có `bbox_height_px` chênh lệch
+(52 vs 59), và phát hiện thêm: cùng font nhưng CÓ BOLD thì height lớn hơn
+hẳn (59 vs 75). Phân tích: đây là phát hiện quan trọng, chỉ ra thiết kế
+ban đầu (dò hệ số theo `font_label`, dùng median đại diện) có lỗi — nếu 1
+`font_label` gộp cả token bold lẫn không-bold, median sẽ gộp 2 phân bố
+khác nhau (bimodal) thành 1 con số không đại diện đúng cho cả 2 nhóm.
+Quyết định: đổi trục nhóm ở Giai đoạn 0/2 từ `font_label` sang DẢI
+`bbox_height_px` thực đo (không nhóm theo nhãn font) — `font_label` chỉ
+còn vai trò kiểm chứng phụ (nếu cùng height nhưng khác `font_label`/
+bold-state mà cần hệ số khác hẳn, đó là bằng chứng height chưa đủ làm
+proxy). Không cần sửa file mẫu — người dùng tự điều chỉnh cách ghi khi
+thu thập số liệu. Riêng sai lệch do hậu tố VND (~6%) được xác nhận không
+đáng kể, giữ nguyên phương án ghi chép.
+
+## Bối cảnh: kết quả thực nghiệm — phát hiện ngược giả thuyết ban đầu
+
+Giai đoạn 0 (Bộ 2, 150 PDF/font, 5 dải font 8-12): xác nhận
+`bbox_height_px` tăng đơn điệu theo `font_label` (~40px ở font 8 → ~61px
+ở font 12), không phát hiện field khác height trong cùng PDF.
+
+Giai đoạn 1 (baseline `1.5` cố định): Nhóm 1 (Pass 1 sai) = 45/3000 field,
+Pass 2 sửa đúng 45/45 (100%) — xác nhận Two-Pass hoạt động đúng mục đích
+thiết kế. Nhóm 3 hồi quy (Pass 1 đúng nhưng Pass 2 làm sai) = 23 field —
+đây là chi phí cần tối thiểu hóa.
+
+Giai đoạn 2 (dò 7 hệ số × 5 dải font, riêng trên PDF đúng dải): phát
+hiện quan trọng nhất của thực nghiệm — Nhóm 1 đúng/tổng gần như BÃO HÒA
+(đạt tối đa) ở HẦU HẾT mọi hệ số trong `[1.0, 2.5]`, không phân biệt được
+hệ số tốt/xấu qua chỉ tiêu này. Chỉ tiêu phân biệt thực sự là Nhóm 3 hồi
+quy — nhưng khi xếp hệ số tốt nhất theo từng dải height, chuỗi kết quả
+(`1.0 → 2.5 → 1.25 → 1.25 → 2.5` theo height tăng dần) KHÔNG có xu hướng
+đơn điệu hay quy luật rõ ràng — dấu hiệu cho thấy đang fit theo nhiễu mẫu
+(số đếm hồi quy tuyệt đối rất nhỏ, 2-10 field/dải trên nền ~600 field/dải)
+chứ không phải quy luật vật lý thật liên hệ giữa height và hệ số tối ưu.
+
+Từ phát hiện này, đề xuất kiểm định giả thuyết đơn giản hơn TRƯỚC khi fit
+`f(height)`: liệu 1 hằng số toàn cục có tốt tương đương/hơn so với chọn
+riêng theo dải hay không (đúng Rule 9 — không dùng mô hình phức tạp hơn
+mức cần thiết). Cộng dồn hồi quy theo từng hệ số trên toàn bộ 5 dải: `1.0`
+và `2.25` đồng hạng thấp nhất (tổng = 18), thấp hơn cả baseline `1.5`
+(tổng = 23, sau khi cập nhật số liệu chính xác) — RÕ RÀNG rằng baseline
+hiện tại KHÔNG PHẢI hệ số tốt nhất.
+
+Verify trên toàn Bộ 2 (3000 field) xác nhận: `1.0` và `2.25` đều giữ
+45/45 Nhóm 1, hồi quy 18/18 — hòa tuyệt đối. Phá thế hòa bằng 2 lý do:
+(1) `2.25` có phương sai hồi quy thấp hơn giữa các dải font (~0.64 so với
+~1.04 của `1.0`) — hiệu quả đồng đều hơn; (2) `1.0` vô hiệu hóa hoàn toàn
+cơ chế Super-Resolution mà spec gốc (Mục 3.2.B) đặt làm nền tảng giải pháp
+— rủi ro mất "buffer" phóng đại nếu DPI/khổ giấy thay đổi ở v2.0
+(ADR-053). Chọn `2.25`.
+
+## Vướng mắc gặp phải
+
+2 lỗi nhập liệu nhỏ trong bảng số liệu (`font_label=12` best_upscale_factor
+ghi nhầm `"4"` thay vì `"2.5"`; `font_label=11` tại `upscale=2.5` thiếu dữ
+liệu) — phát hiện qua đối chiếu chéo với chính dữ liệu Giai đoạn 2 trước
+khi kết luận, người dùng xác nhận và bổ sung.
+
+## Validation
+
+Toàn bộ kết luận dựa trên dữ liệu thực nghiệm người dùng tự chạy trên Bộ 2
+(3000 field DECIMAL, 150 PDF/font × 5 dải font 8-12) — không suy đoán.
+Patch C1: người dùng tự áp dụng, xác nhận thành công. Patch
+`ROI_UPSCALE_FACTOR = 2.25`: người dùng tự áp dụng vào
+`core/domain/constants.py`.
+
+## Phiên tiếp theo
+
+Việc tồn đọng theo đúng thứ tự đã chốt trước đó (SESSION_SUMMARIES.md,
+phiên ROI Preprocess): điều tra nguyên nhân gốc lỗi glyph Pass 1
+`6/8→0` (và `7→?`) cạnh dấu phẩy phân cách hàng nghìn — CHƯA bắt đầu trong
+phiên này. 1 field hồi quy do CLAHE (ADR-077) — chưa giải quyết.
+`TestCropRoi` lỗi thời (ADR-073) — vẫn chưa viết lại. Có thể cân nhắc dùng
+Bộ 2 (đã chứng minh đủ đa dạng, đã có sẵn framework ghi Ground Truth) để
+mở rộng điều tra lỗi glyph này thay vì chỉ dùng bộ high_noise cũ.
+
+## Ghi chú
+
+Phiên này là 1 ví dụ rõ về giá trị của việc kiểm định giả thuyết đơn giản
+trước khi chấp nhận giả thuyết phức tạp hơn (Rule 9): kế hoạch ban đầu
+(xây `f(height)`) được đề xuất dựa trên quan sát ở phiên trước (hệ số
+"tối ưu" dịch chuyển giữa các vòng thực nghiệm khi CHƯA cô lập biến số) —
+nhưng sau khi thực nghiệm có kiểm soát đầy đủ trên Bộ 2 đa dạng, bằng
+chứng cho thấy quan hệ height → hệ số không có quy luật rõ ràng, và 1 hằng
+số toàn cục (khác hẳn giá trị baseline cũ) giải quyết vấn đề tốt hơn.
+Đối xứng cách ADR-074 đã bác bỏ 1 phần đề xuất của spec gốc dựa trên
+bằng chứng thực nghiệm A/B, không phải theo lý thuyết.

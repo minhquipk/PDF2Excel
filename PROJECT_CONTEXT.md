@@ -10,11 +10,12 @@
 > vốn là lịch sử. Mọi thay đổi kiến trúc phải được thảo luận trước khi
 > implement (xem `DEVELOPMENT_WORKFLOW.md`).
 >
-> **Trạng thái tại thời điểm cập nhật gần nhất:** đã đóng xong v1 (đủ
-> cả 3 Part, Session 2026-08-12/13/14) và hoàn tất lộ trình
-> Multi-Threading v2.0 (5/5 bước, Session 2026-08-15/16). Đang ở giai
-> đoạn chuẩn bị tài liệu chuyển giao ứng dụng và lên kế hoạch các hạng
-> mục v2.0 khác (LayoutLM Parser, DPI thích ứng khổ giấy...).
+> **Trạng thái tại thời điểm cập nhật gần nhất:** đã đóng xong v1 và
+> Multi-Threading v2.0. Đang tiếp tục `OCR_ACCURACY_SPECIFICATION.md`
+> (Two-Pass ROI OCR) — đã chốt `ROI_UPSCALE_FACTOR=2.25` (ADR-080) và
+> fallback anchor cho DECIMAL (ADR-079, Session 2026-08-29). Còn lại:
+> điều tra lỗi glyph Pass 1, viết lại `TestCropRoi`, đo Performance/
+> Memory.
 
 ------------------------------------------------------------------------
 
@@ -472,15 +473,19 @@ module cụ thể. Mỗi mục có pointer `→ ADR-xxx` cho lý do kỹ thuật
   của Tesseract). Thuộc Pass 1 (`recognize()`), KHÔNG được Pass 2 kế
   thừa (đã verify qua rà soát source — 2 Pass độc lập, chỉ dùng chung
   vị trí hình học). → ADR-077 (ghi nhận), điều tra ở phiên sau.
-- **`ROI_UPSCALE_FACTOR = f(bbox.height)` bị hoãn** — bộ PDF hiện tại
-  (~10% quy mô mục tiêu, thiếu đa dạng font) không đủ để phân biệt giả
-  thuyết "height là biến chi phối" khỏi khả năng "bộ test có phân bố
-  cỡ chữ hẹp". Giữ hằng số `ROI_UPSCALE_FACTOR = 1.5` tạm thời. →
-  ADR-078.
-- **Khoảng trống đồng bộ source (CHƯA xử lý):** `constants.py::OCR.ROI_UPSCALE_FACTOR`
-  và interpolation trong `recognize_numeric_roi()` chưa khớp điều kiện
-  đã verify ở ADR-077 (`1.5`/`INTER_CUBIC`) — cần đồng bộ trước khi coi
-  `ROI_PREPROCESS_*` đã chốt là an toàn dùng trên production.
+- **`ROI_UPSCALE_FACTOR = f(bbox.height)` đã điều tra và BÁC BỎ**
+  (Session 2026-08-29) trên Bộ 2 (150 PDF/dải font, đa dạng font 8-12,
+  3000 field DECIMAL) — không tìm thấy quan hệ đơn điệu/quy luật rõ
+  ràng giữa height và hệ số tối ưu. Chốt hằng số toàn cục
+  `ROI_UPSCALE_FACTOR`: `1.5` → `2.25`, giảm hồi quy Nhóm 3 từ 23
+  xuống 18/3000 field, giữ nguyên 45/45 Nhóm 1 đúng. → ADR-080
+  (supersedes ADR-078).
+- **Giới hạn đã biết của validate `roi_text` (ADR-071):** chỉ phát
+  hiện được Pass 2 sai CẤU TRÚC, không phát hiện được Pass 1/Pass 2
+  cùng đọc sai nhưng vẫn đúng cấu trúc số (VD "206" bị đọc nhầm thành
+  "200") — cùng bản chất "silent corruption" đã ghi nhận ở ADR-052,
+  chưa có giải pháp. Phát hiện qua thảo luận thiết kế ADR-079 (Session
+  2026-08-29).
 
 ## Parsing / Template Matching
 
@@ -562,10 +567,12 @@ Session 2026-08-13; Part 3/3 — Session 2026-08-14).
 
 ## Giai đoạn tiếp theo (chưa bắt đầu)
 
-0. **Tiếp tục `OCR_ACCURACY_SPECIFICATION.md`**: hoàn tất đánh giá độc
-   lập giai đoạn 2 và chốt `ROI_UPSCALE_FACTOR`/các tham số ROI; viết lại
-   `TestCropRoi`. Sau đó mới thử riêng giai đoạn 1 (Median Blur, Sharpen)
-   và cuối cùng đo Performance/Memory.
+0. **Tiếp tục `OCR_ACCURACY_SPECIFICATION.md`**: `ROI_UPSCALE_FACTOR`
+   đã chốt = `2.25` (hằng số toàn cục, ADR-080). Còn lại: viết lại
+   `TestCropRoi` (lỗi thời từ ADR-073, VẪN CHƯA xử lý); điều tra nguyên
+   nhân gốc lỗi glyph Pass 1 `6/8→0` cạnh dấu phẩy (ADR-077, chưa bắt
+   đầu). Sau đó mới thử riêng giai đoạn 1 (Median Blur, Sharpen) và
+   cuối cùng đo Performance/Memory.
 1. **Tài liệu chuyển giao ứng dụng:**
    - `resources/excel_mapping.json` khớp workbook Excel thật của
      người dùng cuối.
